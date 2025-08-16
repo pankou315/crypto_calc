@@ -92,9 +92,10 @@ class CryptoCalculator:
         result_frame.grid(row=4, column=2, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(10, 0), pady=(0, 20))
         
         # 結果表示用のTreeview
-        self.tree = ttk.Treeview(result_frame, columns=("日付", "種別", "通貨", "数量", "単価(JPY)", "損益(JPY)", "平均取得単価"), show="headings", height=18)
+        self.tree = ttk.Treeview(result_frame, columns=("番号", "日付", "種別", "通貨", "数量", "単価(JPY)", "損益(JPY)", "平均取得単価"), show="headings", height=18)
         
         # カラムの設定
+        self.tree.heading("番号", text="番号")
         self.tree.heading("日付", text="日付")
         self.tree.heading("種別", text="種別")
         self.tree.heading("通貨", text="通貨")
@@ -104,6 +105,7 @@ class CryptoCalculator:
         self.tree.heading("平均取得単価", text="平均取得単価")
         
         # カラム幅の設定
+        self.tree.column("番号", width=50)
         self.tree.column("日付", width=100)
         self.tree.column("種別", width=80)
         self.tree.column("通貨", width=80)
@@ -212,12 +214,20 @@ class CryptoCalculator:
             holdings = {}  # 通貨ごとの保有数量と取得費
             results = []
             formula_details = []  # 公式詳細を保存
+            processed_transactions = set()  # 処理済み取引を記録（重複防止）
+            transaction_counter = 0  # 取引番号カウンター
             
             for idx, row in trade_df.iterrows():
                 operation = row['Operation']
                 coin = row['Coin']
                 change = float(row['Change'])
                 date = row['UTC_Time'].strftime('%Y-%m-%d %H:%M')
+                
+                # 重複処理防止
+                transaction_key = f"{date}_{operation}_{coin}_{change}"
+                if transaction_key in processed_transactions:
+                    print(f"重複取引をスキップ: {transaction_key}")
+                    continue
                 
                 # デバッグ用：各取引の詳細を表示
                 print(f"処理中: {date} | {operation} | {coin} | {change}")
@@ -228,18 +238,27 @@ class CryptoCalculator:
                 if operation == 'Buy Crypto With Fiat':
                     # 日本円で暗号資産購入
                     if coin != 'JPY':
+                        transaction_counter += 1  # 取引番号を増加
+                        
                         # 暗号資産の数量を正の値に
                         quantity = abs(change)
                         old_quantity = holdings[coin]['quantity']
                         old_cost = holdings[coin]['total_cost']
                         
-                        holdings[coin]['quantity'] += quantity
-                        
                         # 日本円の支出を取得費に加算
                         jpy_row = trade_df[(trade_df['UTC_Time'] == row['UTC_Time']) & (trade_df['Coin'] == 'JPY') & (trade_df['Operation'] == 'Buy Crypto With Fiat')]
                         if not jpy_row.empty:
                             jpy_amount = abs(float(jpy_row.iloc[0]['Change']))
-                            holdings[coin]['total_cost'] += jpy_amount
+                            
+                            # 手数料を取得（Transaction Feeから）
+                            fee_row = trade_df[(trade_df['UTC_Time'] == row['UTC_Time']) & (trade_df['Operation'] == 'Transaction Fee')]
+                            fee_amount = 0.0
+                            if not fee_row.empty:
+                                fee_amount = abs(float(fee_row.iloc[0]['Change']))
+                            
+                            # 保有数量と取得費を更新
+                            holdings[coin]['quantity'] += quantity
+                            holdings[coin]['total_cost'] += jpy_amount + fee_amount
                             
                             # 公式詳細を記録
                             new_quantity = holdings[coin]['quantity']
@@ -247,9 +266,10 @@ class CryptoCalculator:
                             avg_cost = new_cost / new_quantity if new_quantity > 0 else 0
                             
                             formula_detail = f"""
-【{date}】{coin}購入取引
+【取引{transaction_counter}】{date} {coin}購入取引
 購入数量: {quantity}
 購入金額: {jpy_amount}円
+手数料: {fee_amount}円
 購入前保有数量: {old_quantity}
 購入前累計取得費: {old_cost}円
 購入後保有数量: {new_quantity}
@@ -258,14 +278,21 @@ class CryptoCalculator:
 """
                             formula_details.append(formula_detail)
                             
-                            print(f"  → {coin}購入: 数量={quantity}, 金額={jpy_amount}円, 累計取得費={holdings[coin]['total_cost']}円")
+                            print(f"  → {coin}購入: 数量={quantity}, 金額={jpy_amount}円, 手数料={fee_amount}円, 累計取得費={holdings[coin]['total_cost']}円")
                             
-                        avg_cost = holdings[coin]['total_cost'] / holdings[coin]['quantity'] if holdings[coin]['quantity'] > 0 else 0
-                        results.append([date, "BUY", coin, quantity, round(jpy_amount/quantity, 2), 0, round(avg_cost, 2)])
+                            results.append([transaction_counter, date, "BUY", coin, quantity, round(jpy_amount/quantity, 2), 0, round(avg_cost, 2)])
+                            
+                            # 処理済みとして記録
+                            processed_transactions.add(transaction_key)
+                            processed_transactions.add(f"{date}_Buy Crypto With Fiat_JPY_{jpy_amount}")
+                            if fee_amount > 0:
+                                processed_transactions.add(f"{date}_Transaction Fee_JPY_{fee_amount}")
                 
                 elif operation == 'Transaction Sold':
                     # 暗号資産売却
                     if change < 0:
+                        transaction_counter += 1  # 取引番号を増加
+                        
                         quantity = abs(change)
                         if holdings[coin]['quantity'] >= quantity:
                             # 平均取得単価で損益計算
@@ -278,37 +305,54 @@ class CryptoCalculator:
                             revenue_row = trade_df[(trade_df['UTC_Time'] == row['UTC_Time']) & (trade_df['Operation'] == 'Transaction Revenue')]
                             if not revenue_row.empty:
                                 proceeds = float(revenue_row.iloc[0]['Change'])
-                                profit = proceeds - cost_basis
+                                
+                                # 手数料を取得（Transaction Feeから）
+                                fee_row = trade_df[(trade_df['UTC_Time'] == row['UTC_Time']) & (trade_df['Operation'] == 'Transaction Fee')]
+                                fee_amount = 0.0
+                                if not fee_row.empty:
+                                    fee_amount = abs(float(fee_row.iloc[0]['Change']))
+                                
+                                # 損益計算（手数料を考慮）
+                                profit = proceeds - cost_basis - fee_amount
                                 
                                 # 公式詳細を記録
                                 new_quantity = old_quantity - quantity
                                 new_cost = old_cost - cost_basis
                                 
                                 formula_detail = f"""
-【{date}】{coin}売却取引
+【取引{transaction_counter}】{date} {coin}売却取引
 売却数量: {quantity}
 売却代金: {proceeds}円
+手数料: {fee_amount}円
 売却前保有数量: {old_quantity}
 売却前累計取得費: {old_cost}円
 平均取得単価: {old_cost}円 ÷ {old_quantity} = {avg_cost:.2f}円
 取得費（売却分）: {avg_cost:.2f}円 × {quantity} = {cost_basis:.2f}円
-損益計算: {proceeds}円 - {cost_basis:.2f}円 = {profit:.2f}円
+損益計算: {proceeds}円 - {cost_basis:.2f}円 - {fee_amount}円 = {profit:.2f}円
 売却後保有数量: {new_quantity}
 売却後累計取得費: {new_cost:.2f}円
 """
                                 formula_details.append(formula_detail)
                                 
-                                print(f"  → {coin}売却: 数量={quantity}, 売却代金={proceeds}円, 取得費={cost_basis}円, 損益={profit}円")
+                                print(f"  → {coin}売却: 数量={quantity}, 売却代金={proceeds}円, 取得費={cost_basis}円, 手数料={fee_amount}円, 損益={profit}円")
         
         # 保有数量と取得費を減らす
                                 holdings[coin]['quantity'] -= quantity
                                 holdings[coin]['total_cost'] -= cost_basis
                                 
-                                results.append([date, "SELL", coin, quantity, "N/A", round(profit, 2), round(avg_cost, 2)])
+                                results.append([transaction_counter, date, "SELL", coin, quantity, "N/A", round(profit, 2), round(avg_cost, 2)])
+                                
+                                # 処理済みとして記録
+                                processed_transactions.add(transaction_key)
+                                processed_transactions.add(f"{date}_Transaction Revenue_JPY_{proceeds}")
+                                if fee_amount > 0:
+                                    processed_transactions.add(f"{date}_Transaction Fee_JPY_{fee_amount}")
+                        else:
+                            print(f"警告: {coin}の保有数量が不足しています。必要: {quantity}, 保有: {holdings[coin]['quantity']}")
 
 # 結果をDataFrameに
             if results:
-                self.result_df = pd.DataFrame(results, columns=["日付", "種別", "通貨", "数量", "単価(JPY)", "損益(JPY)", "平均取得単価"])
+                self.result_df = pd.DataFrame(results, columns=["番号", "日付", "種別", "通貨", "数量", "単価(JPY)", "損益(JPY)", "平均取得単価"])
 
 # 年間合計損益
                 total_profit = self.result_df["損益(JPY)"].sum()
@@ -347,14 +391,17 @@ class CryptoCalculator:
 """
         
         # 各取引の損益を抽出
-        sell_results = [r for r in results if r[1] == "SELL"]
+        sell_results = [r for r in results if r[2] == "SELL"]  # 番号列が追加されたため、インデックスを調整
         if sell_results:
             total_formula += "年間損益合計 = "
             profit_terms = []
-            for i, result in enumerate(sell_results):
-                profit_terms.append(f"取引{i+1}の損益({result[5]}円)")
+            for result in sell_results:
+                transaction_num = result[0]  # 取引番号
+                profit = result[6]  # 損益(JPY)のインデックスを調整
+                profit_terms.append(f"取引{transaction_num}の損益({profit}円)")
             
             total_formula += " + ".join(profit_terms)
+            total_profit = sum([r[6] for r in sell_results])  # 損益を再計算
             total_formula += f" = {total_profit:,.0f}円"
         
         self.formula_text.insert(tk.END, total_formula)
