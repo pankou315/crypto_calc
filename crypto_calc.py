@@ -7,7 +7,7 @@ class CryptoCalculator:
     def __init__(self, root):
         self.root = root
         self.root.title("暗号資産損益計算機")
-        self.root.geometry("1200x800")
+        self.root.geometry("1400x900")
         
         # データフレームを保存する変数
         self.df = None
@@ -22,14 +22,14 @@ class CryptoCalculator:
         
         # タイトル
         title_label = ttk.Label(main_frame, text="暗号資産損益計算機", font=("Arial", 16, "bold"))
-        title_label.grid(row=0, column=0, columnspan=3, pady=(0, 20))
+        title_label.grid(row=0, column=0, columnspan=4, pady=(0, 20))
         
         # ファイル選択部分
         file_frame = ttk.LabelFrame(main_frame, text="ファイル選択", padding="10")
-        file_frame.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 20))
+        file_frame.grid(row=1, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=(0, 20))
         
         self.file_path_var = tk.StringVar()
-        file_entry = ttk.Entry(file_frame, textvariable=self.file_path_var, width=60)
+        file_entry = ttk.Entry(file_frame, textvariable=self.file_path_var, width=80)
         file_entry.grid(row=0, column=0, padx=(0, 10))
         
         browse_btn = ttk.Button(file_frame, text="ファイル選択", command=self.browse_file)
@@ -40,9 +40,9 @@ class CryptoCalculator:
         
         # アルゴリズム説明部分
         algo_frame = ttk.LabelFrame(main_frame, text="計算アルゴリズム", padding="10")
-        algo_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 20))
+        algo_frame.grid(row=2, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=(0, 20))
         
-        algo_text = tk.Text(algo_frame, height=8, width=80, wrap=tk.WORD)
+        algo_text = tk.Text(algo_frame, height=6, width=120, wrap=tk.WORD)
         algo_text.grid(row=0, column=0, sticky=(tk.W, tk.E))
         
         # アルゴリズムの説明を挿入
@@ -69,26 +69,30 @@ class CryptoCalculator:
         
         # 計算実行ボタン
         calc_btn = ttk.Button(main_frame, text="損益計算実行", command=self.calculate_profit)
-        calc_btn.grid(row=3, column=0, columnspan=3, pady=20)
+        calc_btn.grid(row=3, column=0, columnspan=4, pady=20)
         
-        # 公式表示部分を追加
+        # 左側：公式表示部分
         formula_frame = ttk.LabelFrame(main_frame, text="計算公式詳細", padding="10")
-        formula_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 20))
+        formula_frame.grid(row=4, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 10), pady=(0, 20))
         
-        self.formula_text = tk.Text(formula_frame, height=6, width=100, wrap=tk.WORD)
-        self.formula_text.grid(row=0, column=0, sticky=(tk.W, tk.E))
+        self.formula_text = tk.Text(formula_frame, height=20, width=70, wrap=tk.WORD)
+        formula_scrollbar = ttk.Scrollbar(formula_frame, orient=tk.VERTICAL, command=self.formula_text.yview)
+        self.formula_text.configure(yscrollcommand=formula_scrollbar.set)
+        
+        self.formula_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        formula_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
         
         # 初期公式説明
         initial_formula = "計算を実行すると、ここに各取引の詳細な計算公式が表示されます。"
         self.formula_text.insert(tk.END, initial_formula)
         self.formula_text.config(state=tk.DISABLED)
         
-        # 結果表示部分
+        # 右側：結果表示部分
         result_frame = ttk.LabelFrame(main_frame, text="計算結果", padding="10")
-        result_frame.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 20))
+        result_frame.grid(row=4, column=2, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(10, 0), pady=(0, 20))
         
         # 結果表示用のTreeview
-        self.tree = ttk.Treeview(result_frame, columns=("日付", "種別", "通貨", "数量", "単価(JPY)", "損益(JPY)", "平均取得単価"), show="headings", height=8)
+        self.tree = ttk.Treeview(result_frame, columns=("日付", "種別", "通貨", "数量", "単価(JPY)", "損益(JPY)", "平均取得単価"), show="headings", height=18)
         
         # カラムの設定
         self.tree.heading("日付", text="日付")
@@ -115,17 +119,25 @@ class CryptoCalculator:
         self.tree.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
         
-        # 年間損益合計表示
+        # 年間損益合計表示（下部中央）
+        total_frame = ttk.Frame(main_frame)
+        total_frame.grid(row=5, column=0, columnspan=4, pady=(0, 20))
+        
         self.total_profit_var = tk.StringVar()
         self.total_profit_var.set("年間損益合計: 計算してください")
-        total_profit_label = ttk.Label(result_frame, textvariable=self.total_profit_var, font=("Arial", 12, "bold"))
-        total_profit_label.grid(row=1, column=0, columnspan=2, pady=(10, 0))
+        total_profit_label = ttk.Label(total_frame, textvariable=self.total_profit_var, font=("Arial", 14, "bold"))
+        total_profit_label.pack()
         
         # グリッドの重み設定
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(0, weight=1)
-        main_frame.rowconfigure(5, weight=1)
+        main_frame.columnconfigure(1, weight=1)
+        main_frame.columnconfigure(2, weight=1)
+        main_frame.columnconfigure(3, weight=1)
+        main_frame.rowconfigure(4, weight=1)
+        formula_frame.columnconfigure(0, weight=1)
+        formula_frame.rowconfigure(0, weight=1)
         result_frame.columnconfigure(0, weight=1)
         result_frame.rowconfigure(0, weight=1)
         
