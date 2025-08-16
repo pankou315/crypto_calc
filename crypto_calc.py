@@ -7,7 +7,7 @@ class CryptoCalculator:
     def __init__(self, root):
         self.root = root
         self.root.title("暗号資産損益計算機")
-        self.root.geometry("1000x700")
+        self.root.geometry("1200x800")
         
         # データフレームを保存する変数
         self.df = None
@@ -71,12 +71,24 @@ class CryptoCalculator:
         calc_btn = ttk.Button(main_frame, text="損益計算実行", command=self.calculate_profit)
         calc_btn.grid(row=3, column=0, columnspan=3, pady=20)
         
+        # 公式表示部分を追加
+        formula_frame = ttk.LabelFrame(main_frame, text="計算公式詳細", padding="10")
+        formula_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 20))
+        
+        self.formula_text = tk.Text(formula_frame, height=6, width=100, wrap=tk.WORD)
+        self.formula_text.grid(row=0, column=0, sticky=(tk.W, tk.E))
+        
+        # 初期公式説明
+        initial_formula = "計算を実行すると、ここに各取引の詳細な計算公式が表示されます。"
+        self.formula_text.insert(tk.END, initial_formula)
+        self.formula_text.config(state=tk.DISABLED)
+        
         # 結果表示部分
         result_frame = ttk.LabelFrame(main_frame, text="計算結果", padding="10")
-        result_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 20))
+        result_frame.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 20))
         
         # 結果表示用のTreeview
-        self.tree = ttk.Treeview(result_frame, columns=("日付", "種別", "通貨", "数量", "単価(JPY)", "損益(JPY)", "平均取得単価"), show="headings", height=10)
+        self.tree = ttk.Treeview(result_frame, columns=("日付", "種別", "通貨", "数量", "単価(JPY)", "損益(JPY)", "平均取得単価"), show="headings", height=8)
         
         # カラムの設定
         self.tree.heading("日付", text="日付")
@@ -113,7 +125,7 @@ class CryptoCalculator:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(0, weight=1)
-        main_frame.rowconfigure(4, weight=1)
+        main_frame.rowconfigure(5, weight=1)
         result_frame.columnconfigure(0, weight=1)
         result_frame.rowconfigure(0, weight=1)
         
@@ -187,6 +199,7 @@ class CryptoCalculator:
             # 計算用の変数
             holdings = {}  # 通貨ごとの保有数量と取得費
             results = []
+            formula_details = []  # 公式詳細を保存
             
             for idx, row in trade_df.iterrows():
                 operation = row['Operation']
@@ -205,12 +218,33 @@ class CryptoCalculator:
                     if coin != 'JPY':
                         # 暗号資産の数量を正の値に
                         quantity = abs(change)
+                        old_quantity = holdings[coin]['quantity']
+                        old_cost = holdings[coin]['total_cost']
+                        
                         holdings[coin]['quantity'] += quantity
+                        
                         # 日本円の支出を取得費に加算
                         jpy_row = trade_df[(trade_df['UTC_Time'] == row['UTC_Time']) & (trade_df['Coin'] == 'JPY') & (trade_df['Operation'] == 'Buy Crypto With Fiat')]
                         if not jpy_row.empty:
                             jpy_amount = abs(float(jpy_row.iloc[0]['Change']))
                             holdings[coin]['total_cost'] += jpy_amount
+                            
+                            # 公式詳細を記録
+                            new_quantity = holdings[coin]['quantity']
+                            new_cost = holdings[coin]['total_cost']
+                            avg_cost = new_cost / new_quantity if new_quantity > 0 else 0
+                            
+                            formula_detail = f"""
+【{date}】{coin}購入取引
+購入数量: {quantity}
+購入金額: {jpy_amount}円
+購入前保有数量: {old_quantity}
+購入前累計取得費: {old_cost}円
+購入後保有数量: {new_quantity}
+購入後累計取得費: {new_cost}円
+平均取得単価: {new_cost}円 ÷ {new_quantity} = {avg_cost:.2f}円
+"""
+                            formula_details.append(formula_detail)
                             
                             print(f"  → {coin}購入: 数量={quantity}, 金額={jpy_amount}円, 累計取得費={holdings[coin]['total_cost']}円")
                             
@@ -223,7 +257,9 @@ class CryptoCalculator:
                         quantity = abs(change)
                         if holdings[coin]['quantity'] >= quantity:
                             # 平均取得単価で損益計算
-                            avg_cost = holdings[coin]['total_cost'] / holdings[coin]['quantity'] if holdings[coin]['quantity'] > 0 else 0
+                            old_quantity = holdings[coin]['quantity']
+                            old_cost = holdings[coin]['total_cost']
+                            avg_cost = old_cost / old_quantity if old_quantity > 0 else 0
                             cost_basis = avg_cost * quantity
                             
                             # 売却代金を取得（Transaction Revenueから）
@@ -231,6 +267,24 @@ class CryptoCalculator:
                             if not revenue_row.empty:
                                 proceeds = float(revenue_row.iloc[0]['Change'])
                                 profit = proceeds - cost_basis
+                                
+                                # 公式詳細を記録
+                                new_quantity = old_quantity - quantity
+                                new_cost = old_cost - cost_basis
+                                
+                                formula_detail = f"""
+【{date}】{coin}売却取引
+売却数量: {quantity}
+売却代金: {proceeds}円
+売却前保有数量: {old_quantity}
+売却前累計取得費: {old_cost}円
+平均取得単価: {old_cost}円 ÷ {old_quantity} = {avg_cost:.2f}円
+取得費（売却分）: {avg_cost:.2f}円 × {quantity} = {cost_basis:.2f}円
+損益計算: {proceeds}円 - {cost_basis:.2f}円 = {profit:.2f}円
+売却後保有数量: {new_quantity}
+売却後累計取得費: {new_cost:.2f}円
+"""
+                                formula_details.append(formula_detail)
                                 
                                 print(f"  → {coin}売却: 数量={quantity}, 売却代金={proceeds}円, 取得費={cost_basis}円, 損益={profit}円")
         
@@ -246,6 +300,9 @@ class CryptoCalculator:
 
 # 年間合計損益
                 total_profit = self.result_df["損益(JPY)"].sum()
+                
+                # 公式詳細を表示
+                self.display_formulas(formula_details, total_profit, results)
                 
                 print(f"\n=== 計算結果サマリー ===")
                 print(f"総取引件数: {len(results)}")
@@ -266,6 +323,35 @@ class CryptoCalculator:
         except Exception as e:
             messagebox.showerror("エラー", f"計算中にエラーが発生しました:\n{str(e)}")
             print(f"エラー詳細: {e}")
+    
+    def display_formulas(self, formula_details, total_profit, results):
+        """公式詳細を表示"""
+        self.formula_text.config(state=tk.NORMAL)
+        self.formula_text.delete(1.0, tk.END)
+        
+        # 総合計公式
+        total_formula = f"""
+【年間損益合計の計算公式】
+"""
+        
+        # 各取引の損益を抽出
+        sell_results = [r for r in results if r[1] == "SELL"]
+        if sell_results:
+            total_formula += "年間損益合計 = "
+            profit_terms = []
+            for i, result in enumerate(sell_results):
+                profit_terms.append(f"取引{i+1}の損益({result[5]}円)")
+            
+            total_formula += " + ".join(profit_terms)
+            total_formula += f" = {total_profit:,.0f}円"
+        
+        self.formula_text.insert(tk.END, total_formula)
+        
+        # 各取引の詳細公式
+        for i, detail in enumerate(formula_details):
+            self.formula_text.insert(tk.END, f"\n{'='*50}\n{detail}")
+        
+        self.formula_text.config(state=tk.DISABLED)
             
     def display_results(self):
         # 既存の結果をクリア
