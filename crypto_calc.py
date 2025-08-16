@@ -217,6 +217,17 @@ class CryptoCalculator:
             processed_transactions = set()  # 処理済み取引を記録（重複防止）
             transaction_counter = 0  # 取引番号カウンター
             
+            def format_number(value, decimal_places=8):
+                """数字を適切な形式でフォーマット"""
+                if abs(value) < 0.000001:  # 1e-06未満
+                    return f"{value:.8f}"  # 8桁の小数で表示
+                elif abs(value) < 0.01:    # 1銭未満
+                    return f"{value:.6f}"  # 6桁の小数で表示
+                elif abs(value) < 1:       # 1未満
+                    return f"{value:.4f}"  # 4桁の小数で表示
+                else:
+                    return f"{value:.2f}"  # 2桁の小数で表示
+
             for idx, row in trade_df.iterrows():
                 operation = row['Operation']
                 coin = row['Coin']
@@ -254,7 +265,15 @@ class CryptoCalculator:
                             fee_row = trade_df[(trade_df['UTC_Time'] == row['UTC_Time']) & (trade_df['Operation'] == 'Transaction Fee')]
                             fee_amount = 0.0
                             if not fee_row.empty:
-                                fee_amount = abs(float(fee_row.iloc[0]['Change']))
+                                raw_fee = float(fee_row.iloc[0]['Change'])
+                                fee_amount = abs(raw_fee)
+                                
+                                # 手数料の妥当性チェック
+                                if fee_amount < 0.01:  # 1銭未満の手数料は無視
+                                    print(f"警告: 手数料が小さすぎます: {fee_amount}円 (無視されます)")
+                                    fee_amount = 0.0
+                                elif fee_amount > 1000000:  # 100万円以上の手数料は警告
+                                    print(f"警告: 手数料が大きすぎます: {fee_amount}円 (確認が必要)")
                             
                             # 保有数量と取得費を更新
                             holdings[coin]['quantity'] += quantity
@@ -294,6 +313,7 @@ class CryptoCalculator:
                         transaction_counter += 1  # 取引番号を増加
                         
                         quantity = abs(change)
+                        formatted_quantity = format_number(quantity)
                         if holdings[coin]['quantity'] >= quantity:
                             # 平均取得単価で損益計算
                             old_quantity = holdings[coin]['quantity']
@@ -310,7 +330,15 @@ class CryptoCalculator:
                                 fee_row = trade_df[(trade_df['UTC_Time'] == row['UTC_Time']) & (trade_df['Operation'] == 'Transaction Fee')]
                                 fee_amount = 0.0
                                 if not fee_row.empty:
-                                    fee_amount = abs(float(fee_row.iloc[0]['Change']))
+                                    raw_fee = float(fee_row.iloc[0]['Change'])
+                                    fee_amount = abs(raw_fee)
+                                    
+                                    # 手数料の妥当性チェック
+                                    if fee_amount < 0.01:  # 1銭未満の手数料は無視
+                                        print(f"警告: 手数料が小さすぎます: {fee_amount}円 (無視されます)")
+                                        fee_amount = 0.0
+                                    elif fee_amount > 1000000:  # 100万円以上の手数料は警告
+                                        print(f"警告: 手数料が大きすぎます: {fee_amount}円 (確認が必要)")
                                 
                                 # 損益計算（手数料を考慮）
                                 profit = proceeds - cost_basis - fee_amount
@@ -321,16 +349,16 @@ class CryptoCalculator:
                                 
                                 formula_detail = f"""
 【取引{transaction_counter}】{date} {coin}売却取引
-売却数量: {quantity}
-売却代金: {proceeds}円
-手数料: {fee_amount}円
-売却前保有数量: {old_quantity}
-売却前累計取得費: {old_cost}円
-平均取得単価: {old_cost}円 ÷ {old_quantity} = {avg_cost:.2f}円
-取得費（売却分）: {avg_cost:.2f}円 × {quantity} = {cost_basis:.2f}円
-損益計算: {proceeds}円 - {cost_basis:.2f}円 - {fee_amount}円 = {profit:.2f}円
-売却後保有数量: {new_quantity}
-売却後累計取得費: {new_cost:.2f}円
+売却数量: {formatted_quantity}
+売却代金: {format_number(proceeds)}円
+手数料: {format_number(fee_amount)}円
+売却前保有数量: {format_number(old_quantity)}
+売却前累計取得費: {format_number(old_cost)}円
+平均取得単価: {format_number(old_cost)}円 ÷ {format_number(old_quantity)} = {format_number(avg_cost)}円
+取得費（売却分）: {format_number(avg_cost)}円 × {format_number(quantity)} = {format_number(cost_basis)}円
+損益計算: {format_number(proceeds)}円 - {format_number(cost_basis)}円 - {format_number(fee_amount)}円 = {format_number(profit)}円
+売却後保有数量: {format_number(new_quantity)}
+売却後累計取得費: {format_number(new_cost)}円
 """
                                 formula_details.append(formula_detail)
                                 
