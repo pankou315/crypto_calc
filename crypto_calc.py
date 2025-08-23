@@ -76,17 +76,28 @@ class CryptoCalculator:
 • Simple Earn Flexible Rewards: 简单赚币灵活奖励
 • Deposit/Withdraw: 充值/提现
 • Transfer In/Out: 转入/转出
+
+【ETH/BTC历史价格功能】
+• 点击"自动获取ETH/BTC历史价格"按钮自动从网络获取历史价格
+• 使用CoinGecko API免费获取ETH和BTC的日元历史价格
+• 历史价格自动保存到historical_prices.json文件中
+• "损益计算执行"按钮会优先使用历史价格，避免估值误差
+• 如果没有历史价格，会回退到原来的计算方法
         """
         algo_text.insert(tk.END, algorithm_description)
         algo_text.config(state=tk.DISABLED)
         
         # 計算実行ボタン
         calc_btn = ttk.Button(main_frame, text="損益計算実行", command=self.calculate_profit)
-        calc_btn.grid(row=3, column=0, columnspan=2, pady=20)
+        calc_btn.grid(row=3, column=0, pady=20)
+        
+        # 获取历史价格按钮
+        get_price_btn = ttk.Button(main_frame, text="自动获取ETH/BTC历史价格", command=self.get_historical_prices)
+        get_price_btn.grid(row=3, column=1, pady=20)
         
         # 只计算日元交易按钮
         calc_jpy_btn = ttk.Button(main_frame, text="日元交易のみ計算", command=self.calculate_jpy_only)
-        calc_jpy_btn.grid(row=3, column=2, columnspan=2, pady=20)
+        calc_jpy_btn.grid(row=3, column=2, pady=20)
         
         # 左側：公式表示部分
         formula_frame = ttk.LabelFrame(main_frame, text="計算公式詳細", padding="10")
@@ -386,14 +397,22 @@ class CryptoCalculator:
                             
                             # 日元支払いがない場合、BTC支払いを計算
                             if jpy_spend_amount == 0 and btc_spend_amount > 0:
-                                # BTCの平均取得単価を使用してETHの取得費を計算
-                                btc_avg_cost = get_btc_avg_cost()
-                                if btc_avg_cost > 0:
-                                    jpy_spend_amount = btc_spend_amount * btc_avg_cost
-                                    print(f"  → ETH購入（BTC支払い）: {quantity} ETH = {btc_spend_amount:.8f} BTC = {jpy_spend_amount:,.0f} 円 (BTC単価: {btc_avg_cost:,.0f} 円)")
+                                # 首先尝试使用历史价格
+                                transaction_date = row['UTC_Time'].strftime('%Y-%m-%d')
+                                btc_price = self.get_price_for_date(transaction_date, 'BTC')
+                                
+                                if btc_price and btc_price > 0:
+                                    jpy_spend_amount = btc_spend_amount * btc_price
+                                    print(f"  → ETH購入（BTC支払い）: {quantity} ETH = {btc_spend_amount:.8f} BTC = {jpy_spend_amount:,.0f} 円 (历史BTC単価: {btc_price:,.0f} 円)")
                                 else:
-                                    print(f"  ⚠️ 仮想通貨間取引: {quantity} ETH = {btc_spend_amount:.8f} BTC (BTC取得単価なし)")
-                                    continue
+                                    # 如果没有历史价格，使用BTC的平均取得单价
+                                    btc_avg_cost = get_btc_avg_cost()
+                                    if btc_avg_cost > 0:
+                                        jpy_spend_amount = btc_spend_amount * btc_avg_cost
+                                        print(f"  → ETH購入（BTC支払い）: {quantity} ETH = {btc_spend_amount:.8f} BTC = {jpy_spend_amount:,.0f} 円 (BTC平均取得単価: {btc_avg_cost:,.0f} 円)")
+                                    else:
+                                        print(f"  ⚠️ 仮想通貨間取引: {quantity} ETH = {btc_spend_amount:.8f} BTC (BTC取得単価なし)")
+                                        continue
                             
                             # 手数料を計算（日元優先）
                             jpy_fee_amount = 0.0
@@ -503,14 +522,22 @@ class CryptoCalculator:
                                 
                                 # 日元受取がない場合、BTC受取を計算
                                 if jpy_revenue_amount == 0 and btc_revenue_amount > 0:
-                                    # BTCの平均取得単価を使用してETHの売却代金を計算
-                                    btc_avg_cost = get_btc_avg_cost()
-                                    if btc_avg_cost > 0:
-                                        jpy_revenue_amount = btc_revenue_amount * btc_avg_cost
-                                        print(f"  → ETH売却（BTC受取）: {quantity} ETH = {btc_revenue_amount:.8f} BTC = {jpy_revenue_amount:,.0f} 円 (BTC単価: {btc_avg_cost:,.0f} 円)")
+                                    # 首先尝试使用历史价格
+                                    transaction_date = row['UTC_Time'].strftime('%Y-%m-%d')
+                                    btc_price = self.get_price_for_date(transaction_date, 'BTC')
+                                    
+                                    if btc_price and btc_price > 0:
+                                        jpy_revenue_amount = btc_revenue_amount * btc_price
+                                        print(f"  → ETH売却（BTC受取）: {quantity} ETH = {btc_revenue_amount:.8f} BTC = {jpy_revenue_amount:,.0f} 円 (历史BTC単価: {btc_price:,.0f} 円)")
                                     else:
-                                        print(f"  ⚠️ 仮想通貨間取引: {quantity} ETH = {btc_revenue_amount:.8f} BTC (BTC取得単価なし)")
-                                        continue
+                                        # 如果没有历史价格，使用BTC的平均取得单价
+                                        btc_avg_cost = get_btc_avg_cost()
+                                        if btc_avg_cost > 0:
+                                            jpy_revenue_amount = btc_revenue_amount * btc_avg_cost
+                                            print(f"  → ETH売却（BTC受取）: {quantity} ETH = {btc_revenue_amount:.8f} BTC = {jpy_revenue_amount:,.0f} 円 (BTC平均取得単価: {btc_avg_cost:,.0f} 円)")
+                                        else:
+                                            print(f"  ⚠️ 仮想通貨間取引: {quantity} ETH = {btc_revenue_amount:.8f} BTC (BTC取得単価なし)")
+                                            continue
                                 
                                 # 手数料を計算（日元優先）
                                 for related in related_transactions:
@@ -580,21 +607,35 @@ class CryptoCalculator:
                         # 奖励数量
                         reward_quantity = change
                         
-                        # 简易计算：按当前市场价格计算收入（1 ETH = 17.5日元，1 BTC = 50日元）
-                        if coin == 'ETH':
-                            reward_value = reward_quantity * 17.5  # 1 ETH = 17.5日元
-                        elif coin == 'BTC':
-                            reward_value = reward_quantity * 50  # 1 BTC = 50日元
+                        # 使用历史价格计算奖励价值
+                        transaction_date = row['UTC_Time'].strftime('%Y-%m-%d')
+                        coin_price = self.get_price_for_date(transaction_date, coin)
+                        
+                        if coin_price and coin_price > 0:
+                            reward_value = reward_quantity * coin_price
+                            print(f"  → {coin}锁定奖励: 数量={reward_quantity}, 历史价格={coin_price:,.0f}円, 价值={reward_value:,.0f}円")
                         else:
-                            reward_value = 0  # 其他货币暂时设为0
+                            # 如果没有历史价格，使用默认价格
+                            if coin == 'ETH':
+                                reward_value = reward_quantity * 17.5  # 1 ETH = 17.5日元
+                            elif coin == 'BTC':
+                                reward_value = reward_quantity * 50  # 1 BTC = 50日元
+                            else:
+                                reward_value = 0  # 其他货币暂时设为0
+                            print(f"  → {coin}锁定奖励: 数量={reward_quantity}, 默认价格, 价值={reward_value:,.0f}円")
                         
                         # 公式詳細を記録
+                        if coin_price and coin_price > 0:
+                            price_source = f"历史价格: {coin_price:,.0f}円"
+                        else:
+                            price_source = "默认价格"
+                        
                         formula_detail = f"""
 【取引{transaction_counter}】{date} {coin}锁定奖励
 奖励数量: {format_number(reward_quantity)}
 奖励类型: Simple Earn Locked Rewards
+价格来源: {price_source}
 奖励价值（日元）: {reward_value:,.0f} 円
-备注: 按市场价格计算的收入
 """
                         formula_details.append(formula_detail)
                         
@@ -873,6 +914,230 @@ class CryptoCalculator:
         except Exception as e:
             messagebox.showerror("エラー", f"計算中にエラーが発生しました:\n{str(e)}")
             print(f"エラー詳細: {e}")
+    
+    def get_historical_prices(self):
+        """自动获取ETH/BTC交易的历史日元价格"""
+        if self.df is None:
+            messagebox.showerror("エラー", "先にデータを読み込んでください")
+            return
+            
+        try:
+            # 查找所有ETH/BTC交易
+            eth_btc_operations = [
+                'Transaction Buy',           # ETH购买
+                'Transaction Sold',          # ETH卖出
+                'Transaction Spend',         # BTC支出
+                'Transaction Revenue',       # BTC收入
+            ]
+            
+            # 筛选ETH和BTC的交易
+            eth_btc_df = self.df[
+                (self.df['Operation'].isin(eth_btc_operations)) & 
+                (self.df['Coin'].isin(['ETH', 'BTC']))
+            ].copy()
+            
+            if len(eth_btc_df) == 0:
+                messagebox.showwarning("警告", "ETH/BTC交易データが見つかりませんでした")
+                return
+            
+            # 按日期排序
+            eth_btc_df['UTC_Time'] = pd.to_datetime(eth_btc_df['UTC_Time'])
+            eth_btc_df = eth_btc_df.sort_values('UTC_Time')
+            
+            print(f"ETH/BTC交易データ総数: {len(eth_btc_df)}")
+            
+            # 收集需要查询价格的日期
+            dates_to_query = set()
+            for idx, row in eth_btc_df.iterrows():
+                date_str = row['UTC_Time'].strftime('%Y-%m-%d')
+                dates_to_query.add(date_str)
+            
+            print(f"需要查询价格的日期数量: {len(dates_to_query)}")
+            print("日期列表:")
+            for date in sorted(dates_to_query):
+                print(f"  {date}")
+            
+            # 显示进度对话框
+            progress_window = tk.Toplevel(self.root)
+            progress_window.title("正在获取历史价格")
+            progress_window.geometry("400x200")
+            progress_window.transient(self.root)
+            progress_window.grab_set()
+            
+            # 进度标签
+            progress_label = ttk.Label(progress_window, text="正在从网络获取ETH/BTC历史价格...", font=("Arial", 12))
+            progress_label.pack(pady=20)
+            
+            # 进度条
+            progress_bar = ttk.Progressbar(progress_window, mode='indeterminate')
+            progress_bar.pack(pady=20, padx=20, fill=tk.X)
+            progress_bar.start()
+            
+            # 状态标签
+            status_label = ttk.Label(progress_window, text="准备中...", font=("Arial", 10))
+            status_label.pack(pady=10)
+            
+            # 在新线程中获取价格
+            import threading
+            def fetch_prices():
+                try:
+                    prices_data = {}
+                    dates_list = sorted(dates_to_query)
+                    
+                    for i, date in enumerate(dates_list):
+                        # 更新状态
+                        progress_window.after(0, lambda d=date, idx=i: status_label.config(text=f"正在获取 {d} 的价格... ({idx+1}/{len(dates_list)})"))
+                        
+                        # 获取ETH价格
+                        eth_price = self.fetch_eth_price_for_date(date)
+                        # 获取BTC价格
+                        btc_price = self.fetch_btc_price_for_date(date)
+                        
+                        if eth_price > 0 or btc_price > 0:
+                            prices_data[date] = {
+                                'ETH': eth_price,
+                                'BTC': btc_price
+                            }
+                        
+                        # 短暂延迟避免请求过快
+                        import time
+                        time.sleep(0.5)
+                    
+                    # 保存价格数据
+                    if prices_data:
+                        json_filename = "historical_prices.json"
+                        with open(json_filename, 'w', encoding='utf-8') as f:
+                            import json
+                            json.dump(prices_data, f, ensure_ascii=False, indent=2)
+                        
+                        # 显示成功消息
+                        progress_window.after(0, lambda: self.show_price_result(prices_data, json_filename, progress_window))
+                    else:
+                        progress_window.after(0, lambda: self.show_price_error("未能获取到任何价格数据", progress_window))
+                        
+                except Exception as e:
+                    progress_window.after(0, lambda: self.show_price_error(f"获取价格时发生错误: {str(e)}", progress_window))
+            
+            # 启动线程
+            thread = threading.Thread(target=fetch_prices)
+            thread.daemon = True
+            thread.start()
+            
+        except Exception as e:
+            messagebox.showerror("エラー", f"历史价格获取中にエラーが発生しました:\n{str(e)}")
+            print(f"エラー詳細: {e}")
+    
+    def fetch_eth_price_for_date(self, date_str):
+        """从网络获取指定日期的ETH价格（日元）"""
+        try:
+            import requests
+            from datetime import datetime
+            
+            # 解析日期
+            date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+            timestamp = int(date_obj.timestamp())
+            
+            # 使用CoinGecko API获取ETH价格
+            url = f"https://api.coingecko.com/api/v3/coins/ethereum/market_chart/range"
+            params = {
+                'vs_currency': 'jpy',
+                'from': timestamp,
+                'to': timestamp + 86400  # 加24小时
+            }
+            
+            response = requests.get(url, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if 'prices' in data and len(data['prices']) > 0:
+                    # 取第一个价格（最接近指定日期的）
+                    price = data['prices'][0][1]
+                    print(f"  ✓ {date_str} ETH价格: {price:,.0f}円")
+                    return price
+            
+            # 如果CoinGecko失败，尝试使用CoinMarketCap（需要API key）
+            # 这里暂时返回0，你可以添加自己的API key
+            
+            print(f"  ✗ {date_str} ETH价格获取失败")
+            return 0
+            
+        except Exception as e:
+            print(f"  ✗ {date_str} ETH价格获取错误: {e}")
+            return 0
+    
+    def fetch_btc_price_for_date(self, date_str):
+        """从网络获取指定日期的BTC价格（日元）"""
+        try:
+            import requests
+            from datetime import datetime
+            
+            # 解析日期
+            date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+            timestamp = int(date_obj.timestamp())
+            
+            # 使用CoinGecko API获取BTC价格
+            url = f"https://api.coingecko.com/api/v3/coins/bitcoin/market_chart/range"
+            params = {
+                'vs_currency': 'jpy',
+                'from': timestamp,
+                'to': timestamp + 86400  # 加24小时
+            }
+            
+            response = requests.get(url, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if 'prices' in data and len(data['prices']) > 0:
+                    # 取第一个价格（最接近指定日期的）
+                    price = data['prices'][0][1]
+                    print(f"  ✓ {date_str} BTC价格: {price:,.0f}円")
+                    return price
+            
+            print(f"  ✗ {date_str} BTC价格获取失败")
+            return 0
+            
+        except Exception as e:
+            print(f"  ✗ {date_str} BTC价格获取错误: {e}")
+            return 0
+    
+    def show_price_result(self, prices_data, filename, window):
+        """显示价格获取结果"""
+        window.destroy()
+        
+        messagebox.showinfo("成功", f"历史价格获取完成！\n\n共获取了 {len(prices_data)} 个日期的价格\n已保存到: {filename}\n\n现在可以使用'损益计算执行'按钮进行更准确的计算！")
+        
+        print(f"\n=== 历史价格获取完成 ===")
+        print(f"保存文件: {filename}")
+        print("获取的价格数据:")
+        for date, prices in prices_data.items():
+            print(f"  {date}: ETH={prices['ETH']:,.0f}円, BTC={prices['BTC']:,.0f}円")
+    
+    def show_price_error(self, error_msg, window):
+        """显示价格获取错误"""
+        window.destroy()
+        messagebox.showerror("错误", error_msg)
+    
+
+    
+    def load_historical_prices(self):
+        """从JSON文件加载历史价格"""
+        try:
+            json_filename = "historical_prices.json"
+            if os.path.exists(json_filename):
+                with open(json_filename, 'r', encoding='utf-8') as f:
+                    import json
+                    return json.load(f)
+            return {}
+        except Exception as e:
+            print(f"历史价格加载エラー: {e}")
+            return {}
+    
+    def get_price_for_date(self, date_str, coin):
+        """根据日期和币种获取价格"""
+        prices = self.load_historical_prices()
+        date_key = date_str[:10]  # 只取日期部分，去掉时间
+        
+        if date_key in prices and coin in prices[date_key]:
+            return prices[date_key][coin]
+        return None
     
     def display_formulas(self, formula_details, total_profit, results):
         """公式詳細を表示"""
