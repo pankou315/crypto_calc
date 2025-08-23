@@ -99,6 +99,10 @@ class CryptoCalculator:
         calc_jpy_btn = ttk.Button(main_frame, text="日元交易のみ計算", command=self.calculate_jpy_only)
         calc_jpy_btn.grid(row=3, column=2, pady=20)
         
+        # 重新生成文件按钮
+        regenerate_btn = ttk.Button(main_frame, text="重新生成文件", command=self.regenerate_files)
+        regenerate_btn.grid(row=3, column=3, pady=20)
+        
         # 左側：公式表示部分
         formula_frame = ttk.LabelFrame(main_frame, text="計算公式詳細", padding="10")
         formula_frame.grid(row=4, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 10), pady=(0, 20))
@@ -615,14 +619,17 @@ class CryptoCalculator:
                             reward_value = reward_quantity * coin_price
                             print(f"  → {coin}锁定奖励: 数量={reward_quantity}, 历史价格={coin_price:,.0f}円, 价值={reward_value:,.0f}円")
                         else:
-                            # 如果没有历史价格，使用默认价格
+                            # 如果没有历史价格，使用默认价格或设为0
                             if coin == 'ETH':
                                 reward_value = reward_quantity * 17.5  # 1 ETH = 17.5日元
+                                print(f"  → {coin}锁定奖励: 数量={reward_quantity}, 默认价格, 价值={reward_value:,.0f}円")
                             elif coin == 'BTC':
                                 reward_value = reward_quantity * 50  # 1 BTC = 50日元
+                                print(f"  → {coin}锁定奖励: 数量={reward_quantity}, 默认价格, 价值={reward_value:,.0f}円")
                             else:
-                                reward_value = 0  # 其他货币暂时设为0
-                            print(f"  → {coin}锁定奖励: 数量={reward_quantity}, 默认价格, 价值={reward_value:,.0f}円")
+                                # 其他货币如果没有历史价格，设为0
+                                reward_value = 0
+                                print(f"  → {coin}锁定奖励: 数量={reward_quantity}, 无历史价格, 价值=0円")
                         
                         # 公式詳細を記録
                         if coin_price and coin_price > 0:
@@ -669,7 +676,15 @@ class CryptoCalculator:
                 self.display_results()
                 self.total_profit_var.set(f"年間損益合計: {total_profit:,.0f} 円")
                 
-                messagebox.showinfo("完了", "損益計算が完了しました！")
+                # 按货币分别保存结果
+                results_folder = self.save_results_by_coin(results)
+                
+                # 生成总的税务申报表格
+                if results_folder:
+                    self._results_folder = results_folder
+                self.generate_tax_report(results)
+                
+                messagebox.showinfo("完了", "損益計算が完了しました！\n\n各通貨の結果を個別に保存し、\n税務申告用の総合計算表も生成しました。")
             else:
                 messagebox.showwarning("警告", "計算可能な取引データが見つかりませんでした")
             
@@ -984,20 +999,34 @@ class CryptoCalculator:
                     prices_data = {}
                     dates_list = sorted(dates_to_query)
                     
+                    # 获取所有需要的货币列表
+                    all_coins = ['ETH', 'BTC', 'MATIC', 'ADA', 'DOT', 'LINK', 'SOL', 'XRP', 'AVAX', 'UNI', 'ATOM', 'LTC', 'BCH', 'ETC', 'FIL', 'NEAR', 'ALGO', 'VET', 'THETA', 'TRX', 'EOS', 'XLM']
+                    
                     for i, date in enumerate(dates_list):
                         # 更新状态
                         progress_window.after(0, lambda d=date, idx=i: status_label.config(text=f"正在获取 {d} 的价格... ({idx+1}/{len(dates_list)})"))
                         
+                        date_prices = {}
+                        
                         # 获取ETH价格
                         eth_price = self.fetch_eth_price_for_date(date)
+                        if eth_price > 0:
+                            date_prices['ETH'] = eth_price
+                        
                         # 获取BTC价格
                         btc_price = self.fetch_btc_price_for_date(date)
+                        if btc_price > 0:
+                            date_prices['BTC'] = btc_price
                         
-                        if eth_price > 0 or btc_price > 0:
-                            prices_data[date] = {
-                                'ETH': eth_price,
-                                'BTC': btc_price
-                            }
+                        # 获取其他货币价格（只获取前几个主要货币，避免API限制）
+                        other_coins = ['MATIC', 'ADA', 'DOT', 'LINK', 'SOL']
+                        for coin in other_coins:
+                            coin_price = self.fetch_other_coin_price(coin, date)
+                            if coin_price > 0:
+                                date_prices[coin] = coin_price
+                        
+                        if date_prices:
+                            prices_data[date] = date_prices
                         
                         # 短暂延迟避免请求过快
                         import time
@@ -1098,6 +1127,74 @@ class CryptoCalculator:
             print(f"  ✗ {date_str} BTC价格获取错误: {e}")
             return 0
     
+    def fetch_other_coin_price(self, coin, date_str):
+        """获取其他货币的价格（日元）"""
+        try:
+            import requests
+            from datetime import datetime
+            
+            # 解析日期
+            date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+            timestamp = int(date_obj.timestamp())
+            
+            # 使用CoinGecko API获取指定货币的价格
+            # 首先需要获取货币的ID
+            coin_id = self.get_coin_id(coin)
+            if not coin_id:
+                print(f"  ✗ 无法找到{coin}的CoinGecko ID")
+                return 0
+            
+            url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart/range"
+            params = {
+                'vs_currency': 'jpy',
+                'from': timestamp,
+                'to': timestamp + 86400  # 加24小时
+            }
+            
+            response = requests.get(url, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if 'prices' in data and len(data['prices']) > 0:
+                    # 取第一个价格（最接近指定日期的）
+                    price = data['prices'][0][1]
+                    print(f"  ✓ {date_str} {coin}价格: {price:,.0f}円")
+                    return price
+            
+            print(f"  ✗ {date_str} {coin}价格获取失败")
+            return 0
+            
+        except Exception as e:
+            print(f"  ✗ {date_str} {coin}价格获取错误: {e}")
+            return 0
+    
+    def get_coin_id(self, coin):
+        """获取货币的CoinGecko ID"""
+        # 常见货币的ID映射
+        coin_mapping = {
+            'ADA': 'cardano',
+            'DOT': 'polkadot',
+            'LINK': 'chainlink',
+            'MATIC': 'matic-network',
+            'SOL': 'solana',
+            'XRP': 'ripple',
+            'AVAX': 'avalanche-2',
+            'UNI': 'uniswap',
+            'ATOM': 'cosmos',
+            'LTC': 'litecoin',
+            'BCH': 'bitcoin-cash',
+            'ETC': 'ethereum-classic',
+            'FIL': 'filecoin',
+            'NEAR': 'near',
+            'ALGO': 'algorand',
+            'VET': 'vechain',
+            'THETA': 'theta-token',
+            'TRX': 'tron',
+            'EOS': 'eos',
+            'XLM': 'stellar'
+        }
+        
+        return coin_mapping.get(coin.upper(), None)
+    
     def show_price_result(self, prices_data, filename, window):
         """显示价格获取结果"""
         window.destroy()
@@ -1108,7 +1205,11 @@ class CryptoCalculator:
         print(f"保存文件: {filename}")
         print("获取的价格数据:")
         for date, prices in prices_data.items():
-            print(f"  {date}: ETH={prices['ETH']:,.0f}円, BTC={prices['BTC']:,.0f}円")
+            price_info = []
+            for coin, price in prices.items():
+                if price > 0:
+                    price_info.append(f"{coin}={price:,.0f}円")
+            print(f"  {date}: {', '.join(price_info)}")
     
     def show_price_error(self, error_msg, window):
         """显示价格获取错误"""
@@ -1137,6 +1238,7 @@ class CryptoCalculator:
         
         if date_key in prices and coin in prices[date_key]:
             return prices[date_key][coin]
+        
         return None
     
     def display_formulas(self, formula_details, total_profit, results):
@@ -1179,6 +1281,247 @@ class CryptoCalculator:
         # 新しい結果を表示
         for _, row in self.result_df.iterrows():
             self.tree.insert("", tk.END, values=list(row))
+    
+    def save_results_by_coin(self, results):
+        """按货币分别保存结果到Excel文件"""
+        try:
+            import pandas as pd
+            from collections import defaultdict
+            import os
+            
+            # 创建结果文件夹
+            timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
+            results_folder = f"暗号資産計算結果_{timestamp}"
+            os.makedirs(results_folder, exist_ok=True)
+            
+            # 按货币分组结果
+            coin_results = defaultdict(list)
+            for result in results:
+                coin = result[3]  # 货币列
+                coin_results[coin].append(result)
+            
+            # 为每个货币创建Excel文件
+            for coin, coin_data in coin_results.items():
+                if coin_data:
+                    # 创建DataFrame
+                    df = pd.DataFrame(coin_data, columns=["番号", "日付", "種別", "通貨", "数量", "単価(JPY)", "損益(JPY)", "平均取得単価"])
+                    
+                    # 计算该货币的汇总信息
+                    total_quantity = sum([float(str(r[4]).replace(',', '')) for r in coin_data if r[4] != "N/A" and str(r[4]) != "0"])
+                    total_profit = sum([float(str(r[6]).replace(',', '')) for r in coin_data if r[6] != 0 and str(r[6]) != "N/A"])
+                    
+                    # 文件名
+                    filename = f"{coin}_取引記録.xlsx"
+                    filepath = os.path.join(results_folder, filename)
+                    
+                    # 保存到Excel
+                    with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+                        # 交易记录表
+                        df.to_excel(writer, sheet_name='取引記録', index=False)
+                        
+                        # 汇总表
+                        summary_data = {
+                            '項目': ['総取引件数', '総数量', '総損益(円)', '平均単価(円)'],
+                            '値': [len(coin_data), total_quantity, total_profit, total_profit/total_quantity if total_quantity > 0 else 0]
+                        }
+                        summary_df = pd.DataFrame(summary_data)
+                        summary_df.to_excel(writer, sheet_name='サマリー', index=False)
+                    
+                    print(f"✓ {coin}の結果を保存しました: {filename}")
+            
+            print(f"✓ すべての結果を保存しました: {results_folder}")
+            return results_folder
+            
+        except Exception as e:
+            print(f"通貨別保存エラー: {e}")
+            return None
+    
+    def generate_tax_report(self, results):
+        """生成税务申报用的总计算表格"""
+        try:
+            import pandas as pd
+            from collections import defaultdict
+            import os
+            
+            # 按货币分组并计算汇总数据
+            coin_summary = defaultdict(lambda: {
+                'purchase_quantity': 0,
+                'purchase_amount': 0,
+                'sale_quantity': 0,
+                'sale_amount': 0,
+                'profit': 0,
+                'fees': 0
+            })
+            
+            for result in results:
+                coin = result[3]  # 货币
+                operation = result[2]  # 操作类型
+                quantity = float(str(result[4]).replace(',', '')) if result[4] != "N/A" else 0
+                amount = float(str(result[6]).replace(',', '')) if result[6] != "N/A" else 0
+                
+                if operation == "Transaction Buy":
+                    coin_summary[coin]['purchase_quantity'] += quantity
+                    coin_summary[coin]['purchase_amount'] += abs(amount)
+                elif operation == "Transaction Sold":
+                    coin_summary[coin]['sale_quantity'] += quantity
+                    coin_summary[coin]['sale_amount'] += abs(amount)
+                    coin_summary[coin]['profit'] += amount
+                elif operation == "Transaction Fee":
+                    coin_summary[coin]['fees'] += abs(amount)
+                elif operation == "Simple Earn Locked Rewards":
+                    coin_summary[coin]['purchase_quantity'] += quantity
+                    coin_summary[coin]['purchase_amount'] += 0  # 奖励通常成本为0
+            
+            # 创建税务申报表格
+            tax_data = []
+            total_purchase_quantity = 0
+            total_purchase_amount = 0
+            total_sale_quantity = 0
+            total_sale_amount = 0
+            total_profit = 0
+            total_fees = 0
+            
+            for coin, data in coin_summary.items():
+                if data['purchase_quantity'] > 0 or data['sale_quantity'] > 0:
+                    tax_data.append({
+                        '暗号資産の名称': coin,
+                        '購入数量': f"{data['purchase_quantity']:.8f}",
+                        '購入金額': f"{data['purchase_amount']:,.0f}",
+                        '売却数量': f"{data['sale_quantity']:.8f}",
+                        '売却金額': f"{data['sale_amount']:,.0f}",
+                        '損益': f"{data['profit']:,.0f}",
+                        '手数料': f"{data['fees']:,.0f}"
+                    })
+                    
+                    total_purchase_quantity += data['purchase_quantity']
+                    total_purchase_amount += data['purchase_amount']
+                    total_sale_quantity += data['sale_quantity']
+                    total_sale_amount += data['sale_amount']
+                    total_profit += data['profit']
+                    total_fees += data['fees']
+            
+            # 添加总计行
+            tax_data.append({
+                '暗号資産の名称': '合計',
+                '購入数量': f"{total_purchase_quantity:.8f}",
+                '購入金額': f"{total_purchase_amount:,.0f}",
+                '売却数量': f"{total_sale_quantity:.8f}",
+                '売却金額': f"{total_sale_amount:,.0f}",
+                '損益': f"{total_profit:,.0f}",
+                '手数料': f"{total_fees:,.0f}"
+            })
+            
+            # 创建DataFrame并保存
+            tax_df = pd.DataFrame(tax_data)
+            filename = "暗号資産税務申告表.xlsx"
+            
+            # 获取结果文件夹路径（从save_results_by_coin方法返回）
+            results_folder = getattr(self, '_results_folder', None)
+            if results_folder:
+                filepath = os.path.join(results_folder, filename)
+            else:
+                # 如果没有结果文件夹，创建默认文件夹
+                timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
+                results_folder = f"暗号資産計算結果_{timestamp}"
+                os.makedirs(results_folder, exist_ok=True)
+                filepath = os.path.join(results_folder, filename)
+            
+            with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+                # 主要汇总表
+                tax_df.to_excel(writer, sheet_name='通貨別取引サマリー', index=False)
+                
+                # 日本税务申报表格格式
+                japan_tax_data = {
+                    '項目': [
+                        '収入金額',
+                        '売却価額',
+                        '売却原価',
+                        '必要経費',
+                        '手数料等',
+                        '所得金額'
+                    ],
+                    '金額(円)': [
+                        total_sale_amount,
+                        total_sale_amount,
+                        total_purchase_amount,
+                        total_fees,
+                        total_fees,
+                        total_profit - total_fees
+                    ]
+                }
+                japan_tax_df = pd.DataFrame(japan_tax_data)
+                japan_tax_df.to_excel(writer, sheet_name='日本税務申告用', index=False)
+                
+                # 详细计算表
+                detail_data = {
+                    '計算項目': [
+                        '年始残高',
+                        '購入等',
+                        '売却等',
+                        '売却原価',
+                        '末残高・翌年繰越'
+                    ],
+                    '数量': [
+                        0,  # 年始残高
+                        total_purchase_quantity,
+                        total_sale_quantity,
+                        total_sale_quantity,  # 假设全部卖出
+                        total_purchase_quantity - total_sale_quantity
+                    ],
+                    '金額(円)': [
+                        0,  # 年始残高
+                        total_purchase_amount,
+                        total_sale_amount,
+                        total_purchase_amount * (total_sale_quantity / total_purchase_quantity) if total_purchase_quantity > 0 else 0,
+                        total_purchase_amount * ((total_purchase_quantity - total_sale_quantity) / total_purchase_quantity) if total_purchase_quantity > 0 else 0
+                    ]
+                }
+                detail_df = pd.DataFrame(detail_data)
+                detail_df.to_excel(writer, sheet_name='詳細計算', index=False)
+            
+            print(f"✓ 税務申告用総合計算表を保存しました: {filename}")
+            
+        except Exception as e:
+            print(f"税務申告表生成エラー: {e}")
+    
+    def regenerate_files(self):
+        """重新生成结果文件"""
+        if not hasattr(self, 'result_df') or self.result_df is None:
+            messagebox.showwarning("警告", "先に損益計算を実行してください")
+            return
+        
+        try:
+            # 获取计算结果
+            results = []
+            for _, row in self.result_df.iterrows():
+                results.append(list(row))
+            
+            if not results:
+                messagebox.showwarning("警告", "計算結果がありません")
+                return
+            
+            # 按货币分别保存结果
+            results_folder = self.save_results_by_coin(results)
+            
+            # 生成总的税务申报表格
+            if results_folder:
+                self._results_folder = results_folder
+            self.generate_tax_report(results)
+            
+            # 显示成功消息
+            if results_folder:
+                messagebox.showinfo("成功", f"ファイルを再生成しました！\n\n保存先: {results_folder}\n\nフォルダを開きますか？")
+                
+                # 询问是否打开文件夹
+                if messagebox.askyesno("確認", "結果フォルダを開きますか？"):
+                    import os
+                    os.startfile(results_folder)
+            else:
+                messagebox.showinfo("成功", "ファイルを再生成しました！")
+                
+        except Exception as e:
+            messagebox.showerror("エラー", f"ファイル再生成中にエラーが発生しました:\n{str(e)}")
+            print(f"ファイル再生成エラー: {e}")
 
 def main():
     root = tk.Tk()
