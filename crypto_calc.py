@@ -11,6 +11,7 @@ class CryptoCalculator:
         
         # データフレームを保存する変数
         self.df = None
+        self.trading_df = None  # 現物注文取引履歴用
         self.result_df = None
         
         self.create_widgets()
@@ -28,15 +29,31 @@ class CryptoCalculator:
         file_frame = ttk.LabelFrame(main_frame, text="ファイル選択", padding="10")
         file_frame.grid(row=1, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=(0, 20))
         
+        # 第一个文件：取りれ歴トランザクション記録
+        ttk.Label(file_frame, text="取りれ歴トランザクション記録:").grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
+        
         self.file_path_var = tk.StringVar()
         file_entry = ttk.Entry(file_frame, textvariable=self.file_path_var, width=80)
-        file_entry.grid(row=0, column=0, padx=(0, 10))
+        file_entry.grid(row=1, column=0, padx=(0, 10), pady=(0, 10))
         
         browse_btn = ttk.Button(file_frame, text="ファイル選択", command=self.browse_file)
-        browse_btn.grid(row=0, column=1)
+        browse_btn.grid(row=1, column=1, pady=(0, 10))
         
         load_btn = ttk.Button(file_frame, text="データ読み込み", command=self.load_data)
-        load_btn.grid(row=0, column=2, padx=(10, 0))
+        load_btn.grid(row=1, column=2, padx=(10, 0), pady=(0, 10))
+        
+        # 第二个文件：現物注文取引履歴
+        ttk.Label(file_frame, text="現物注文取引履歴:").grid(row=2, column=0, sticky=tk.W, pady=(0, 5))
+        
+        self.trading_file_path_var = tk.StringVar()
+        trading_file_entry = ttk.Entry(file_frame, textvariable=self.trading_file_path_var, width=80)
+        trading_file_entry.grid(row=3, column=0, padx=(0, 10), pady=(0, 10))
+        
+        trading_browse_btn = ttk.Button(file_frame, text="ファイル選択", command=self.browse_trading_file)
+        trading_browse_btn.grid(row=3, column=1, pady=(0, 10))
+        
+        trading_load_btn = ttk.Button(file_frame, text="データ読み込み", command=self.load_trading_data)
+        trading_load_btn.grid(row=3, column=2, padx=(10, 0), pady=(0, 10))
         
         # アルゴリズム説明部分
         algo_frame = ttk.LabelFrame(main_frame, text="計算アルゴリズム", padding="10")
@@ -76,6 +93,11 @@ class CryptoCalculator:
 • Simple Earn Flexible Rewards: 简单赚币灵活奖励
 • Deposit/Withdraw: 充值/提现
 • Transfer In/Out: 转入/转出
+
+【現物注文取引履歴連携機能】
+• 現物注文取引履歴.csvファイルを読み込むことで、実際の取引価格を使用
+• 取引価格の優先順位：現物注文取引履歴 > 历史价格 > デフォルト価格
+• より正確な損益計算が可能
 
 【ETH/BTC历史价格功能】
 • 点击"自动获取ETH/BTC历史价格"按钮自动从网络获取历史价格
@@ -183,6 +205,39 @@ class CryptoCalculator:
         if filename:
             self.file_path_var.set(filename)
             
+    def browse_trading_file(self):
+        filename = filedialog.askopenfilename(
+            title="現物注文取引履歴CSVファイルを選択",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        if filename:
+            self.trading_file_path_var.set(filename)
+            
+    def load_trading_data(self):
+        file_path = self.trading_file_path_var.get()
+        if not file_path:
+            messagebox.showerror("エラー", "現物注文取引履歴ファイルを選択してください")
+            return
+            
+        try:
+            # 文字コードを自動判定
+            encodings = ['utf-8', 'shift-jis', 'cp932']
+            for encoding in encodings:
+                try:
+                    self.trading_df = pd.read_csv(file_path, encoding=encoding)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            else:
+                messagebox.showerror("エラー", "ファイルの文字コードを判定できませんでした")
+                return
+                
+            # データの基本情報を表示
+            messagebox.showinfo("成功", f"現物注文取引履歴データを読み込みました\n行数: {len(self.trading_df)}\n列: {', '.join(self.trading_df.columns)}")
+            
+        except Exception as e:
+            messagebox.showerror("エラー", f"ファイルの読み込みに失敗しました: {str(e)}")
+            
     def load_data(self):
         file_path = self.file_path_var.get()
         if not file_path:
@@ -207,12 +262,243 @@ class CryptoCalculator:
         except Exception as e:
             messagebox.showerror("エラー", f"ファイルの読み込みに失敗しました:\n{str(e)}")
             
+    def process_trading_history(self):
+        """現物注文取引履歴データを処理して、取引価格情報を追加"""
+        try:
+            print("現物注文取引履歴データの処理を開始...")
+            
+            # 日付列をdatetime型に変換
+            self.trading_df['Date(UTC)'] = pd.to_datetime(self.trading_df['Date(UTC)'])
+            
+            # 取引データを日付でソート
+            self.trading_df = self.trading_df.sort_values('Date(UTC)')
+            
+            # 各取引ペアの価格情報を整理
+            self.trading_prices = {}
+            
+            processed_count = 0
+            error_count = 0
+            
+            for idx, row in self.trading_df.iterrows():
+                try:
+                    date = row['Date(UTC)']
+                    pair = row['Pair']
+                    side = row['Side']
+                    price = float(row['Price'])
+                    executed = row['Executed']
+                    amount = row['Amount']
+                    fee = row['Fee']
+                    
+                    # 取引ペアを解析（例：BTCJPY, ETHBTC, DOGEJPY）
+                    if 'JPY' in pair:
+                        # 日元取引の場合
+                        base_coin = pair.replace('JPY', '')
+                        if side == 'BUY':
+                            # 購入：JPY支出、暗号資産獲得
+                            if base_coin not in self.trading_prices:
+                                self.trading_prices[base_coin] = {'buys': [], 'sells': []}
+                            
+                            # 数量と金額を解析
+                            coin_quantity = self.parse_quantity(executed)
+                            jpy_amount = self.parse_jpy_amount(amount)
+                            
+                            if coin_quantity > 0:  # 有効な数量の場合のみ追加
+                                self.trading_prices[base_coin]['buys'].append({
+                                    'date': date,
+                                    'price': price,
+                                    'quantity': coin_quantity,
+                                    'jpy_amount': jpy_amount,
+                                    'fee': fee
+                                })
+                                processed_count += 1
+                            
+                        elif side == 'SELL':
+                            # 売却：暗号資産支出、JPY獲得
+                            if base_coin not in self.trading_prices:
+                                self.trading_prices[base_coin] = {'buys': [], 'sells': []}
+                            
+                            coin_quantity = self.parse_quantity(executed)
+                            jpy_amount = self.parse_jpy_amount(amount)
+                            
+                            if coin_quantity > 0:  # 有効な数量の場合のみ追加
+                                self.trading_prices[base_coin]['sells'].append({
+                                    'date': date,
+                                    'price': price,
+                                    'quantity': coin_quantity,
+                                    'jpy_amount': jpy_amount,
+                                    'fee': fee
+                                })
+                                processed_count += 1
+                            
+                    elif 'BTC' in pair and 'ETH' in pair:
+                        # ETHBTC取引の場合
+                        if 'ETH' not in self.trading_prices:
+                            self.trading_prices['ETH'] = {'buys': [], 'sells': []}
+                        
+                        eth_quantity = self.parse_quantity(executed)
+                        btc_amount = self.parse_btc_amount(amount)
+                        
+                        if eth_quantity > 0:  # 有効な数量の場合のみ追加
+                            if side == 'BUY':
+                                # ETH購入（BTC支出）
+                                self.trading_prices['ETH']['buys'].append({
+                                    'date': date,
+                                    'price': price,  # ETH/BTC価格
+                                    'quantity': eth_quantity,
+                                    'btc_amount': btc_amount,
+                                    'fee': fee
+                                })
+                                processed_count += 1
+                            elif side == 'SELL':
+                                # ETH売却（BTC獲得）
+                                self.trading_prices['ETH']['sells'].append({
+                                    'date': date,
+                                    'price': price,
+                                    'quantity': eth_quantity,
+                                    'btc_amount': btc_amount,
+                                    'fee': fee
+                                })
+                                processed_count += 1
+                                
+                    elif 'ETH' in pair and 'DAI' in pair:
+                        # ETHDAI取引の場合
+                        if 'ETH' not in self.trading_prices:
+                            self.trading_prices['ETH'] = {'buys': [], 'sells': []}
+                        
+                        eth_quantity = self.parse_quantity(executed)
+                        dai_amount = self.parse_dai_amount(amount)
+                        
+                        if eth_quantity > 0:  # 有効な数量の場合のみ追加
+                            if side == 'BUY':
+                                # ETH購入（DAI支出）
+                                self.trading_prices['ETH']['buys'].append({
+                                    'date': date,
+                                    'price': price,  # ETH/DAI価格
+                                    'quantity': eth_quantity,
+                                    'dai_amount': dai_amount,
+                                    'fee': fee
+                                })
+                                processed_count += 1
+                            elif side == 'SELL':
+                                # ETH売却（DAI獲得）
+                                self.trading_prices['ETH']['sells'].append({
+                                    'date': date,
+                                    'price': price,
+                                    'quantity': eth_quantity,
+                                    'dai_amount': dai_amount,
+                                    'fee': fee
+                                })
+                                processed_count += 1
+                                
+                except Exception as e:
+                    error_count += 1
+                    print(f"行 {idx} の処理エラー: {str(e)}")
+                    print(f"  データ: {row.to_dict()}")
+                    continue
+            
+            print(f"現物注文取引履歴処理完了:")
+            print(f"  ✓ 処理成功: {processed_count} 件")
+            print(f"  ⚠️ 処理エラー: {error_count} 件")
+            print(f"  ✓ 通貨数: {len(self.trading_prices)}")
+            
+            # 各通貨の取引件数を表示
+            for coin, data in self.trading_prices.items():
+                buy_count = len(data.get('buys', []))
+                sell_count = len(data.get('sells', []))
+                print(f"    {coin}: 購入 {buy_count}件, 売却 {sell_count}件")
+            
+        except Exception as e:
+            print(f"現物注文取引履歴処理エラー: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("エラー", f"現物注文取引履歴の処理に失敗しました: {str(e)}")
+    
+    def parse_quantity(self, executed_str):
+        """実行数量文字列から数量を抽出"""
+        try:
+            # 例: "0.003ETH" -> 0.003
+            for char in executed_str:
+                if char.isalpha():
+                    return float(executed_str.replace(char, ''))
+            return 0.0
+        except:
+            return 0.0
+            
+    def parse_jpy_amount(self, amount_str):
+        """金額文字列からJPY金額を抽出"""
+        try:
+            if 'JPY' in amount_str:
+                return float(amount_str.replace('JPY', ''))
+            return 0.0
+        except:
+            return 0.0
+            
+    def parse_btc_amount(self, amount_str):
+        """金額文字列からBTC金額を抽出"""
+        try:
+            if 'BTC' in amount_str:
+                return float(amount_str.replace('BTC', ''))
+            return 0.0
+        except:
+            return 0.0
+            
+    def parse_dai_amount(self, amount_str):
+        """金額文字列からDAI金額を抽出"""
+        try:
+            if 'DAI' in amount_str:
+                return float(amount_str.replace('DAI', ''))
+            return 0.0
+        except:
+            return 0.0
+            
+    def get_trading_price(self, coin, date, operation):
+        """指定した日付と通貨の取引価格を取得"""
+        if coin not in self.trading_prices:
+            return None
+            
+        # 日付をdatetime型に変換
+        if isinstance(date, str):
+            date = pd.to_datetime(date)
+            
+        # 最も近い日付の取引価格を検索
+        if operation == 'BUY':
+            trades = self.trading_prices[coin]['buys']
+        else:
+            trades = self.trading_prices[coin]['sells']
+            
+        if not trades:
+            return None
+            
+        # 日付の差が最小の取引を検索
+        min_diff = float('inf')
+        best_price = None
+        
+        for trade in trades:
+            diff = abs((trade['date'] - date).total_seconds())
+            if diff < min_diff:
+                min_diff = diff
+                best_price = trade['price']
+                
+        return best_price
+            
     def calculate_profit(self):
         if self.df is None:
             messagebox.showerror("エラー", "先にデータを読み込んでください")
             return
             
+        if self.trading_df is None:
+            messagebox.showerror("エラー", "先に現物注文取引履歴データを読み込んでください")
+            return
+            
         try:
+            # 現物注文取引履歴データを処理
+            self.process_trading_history()
+            
+            print(f"=== 現物注文取引履歴データ処理完了 ===")
+            print(f"利用可能な通貨: {list(self.trading_prices.keys())}")
+            for coin, data in self.trading_prices.items():
+                print(f"  {coin}: 購入{len(data['buys'])}件, 売却{len(data['sells'])}件")
+            
             # 取引データのみを抽出（入出金、報酬などは除外）
             trade_operations = [
                 'Transaction Buy',           # 暗号資産購入
@@ -257,6 +543,53 @@ class CryptoCalculator:
                 else:
                     return f"{value:.2f}"  # 2桁の小数で表示
 
+            # 現物注文取引履歴から価格を取得する関数
+            def get_price_from_trading_history(coin, date, operation_type):
+                """現物注文取引履歴から指定した日付と通貨の価格を取得"""
+                if not hasattr(self, 'trading_prices') or coin not in self.trading_prices:
+                    return None
+                
+                try:
+                    # 日付をdatetime型に変換
+                    if isinstance(date, str):
+                        date_obj = pd.to_datetime(date)
+                    else:
+                        date_obj = date
+                    
+                    # 最も近い日付の取引価格を検索
+                    min_diff = float('inf')
+                    best_price = None
+                    best_trade_info = None
+                    
+                    # 取引タイプに応じて検索
+                    if operation_type == 'BUY':
+                        trades = self.trading_prices[coin]['buys']
+                    else:  # SELL
+                        trades = self.trading_prices[coin]['sells']
+                    
+                    if not trades:
+                        return None
+                    
+                    for trade in trades:
+                        diff = abs((trade['date'] - date_obj).total_seconds())
+                        if diff < min_diff:
+                            min_diff = diff
+                            best_price = trade['price']
+                            best_trade_info = f"{operation_type} {trade['date']} {trade['price']}"
+                    
+                    # 2時間以内の価格のみ有効とする
+                    if best_price is not None and min_diff <= 7200:
+                        print(f"    ✓ 現物注文取引履歴から{coin}の{operation_type}価格を取得: {best_price} (日付差: {min_diff/60:.1f}分)")
+                        return best_price
+                    elif best_price is not None:
+                        print(f"    ⚠️ 現物注文取引履歴から{coin}の{operation_type}価格を取得: {best_price} (日付差: {min_diff/60:.1f}分) - 日付差が大きすぎます")
+                    
+                    return None
+                    
+                except Exception as e:
+                    print(f"    現物注文取引履歴からの価格取得エラー: {str(e)}")
+                    return None
+                    
             # 取引ペアを特定するためのヘルパー関数
             def find_transaction_pair(timestamp, operation, coin):
                 """特定のタイムスタンプで関連する取引を検索"""
@@ -347,7 +680,7 @@ class CryptoCalculator:
                         return 0
                     return avg_cost
                 return 0
-
+                    
             for idx, row in trade_df.iterrows():
                 operation = row['Operation']
                 coin = row['Coin']
@@ -593,7 +926,14 @@ class CryptoCalculator:
                                 holdings[coin]['quantity'] -= quantity
                                 holdings[coin]['total_cost'] -= cost_basis
                                 
-                                results.append([transaction_counter, date, "SELL", coin, quantity, "N/A", f"{profit:,.0f}", f"{avg_cost:,.0f}"])
+                                # 現物注文取引履歴から売却単価を取得
+                                sell_unit_price = "N/A"
+                                if hasattr(self, 'trading_prices') and coin in self.trading_prices:
+                                    # 売却取引の単価を計算（売却代金 ÷ 売却数量）
+                                    if quantity > 0:
+                                        sell_unit_price = f"{jpy_revenue_amount / quantity:,.0f}"
+                                
+                                results.append([transaction_counter, date, "SELL", coin, quantity, sell_unit_price, f"{profit:,.0f}", f"{avg_cost:,.0f}"])
                                 
                                 # 処理済みとして記録
                                 processed_transactions.add(transaction_key)
@@ -661,11 +1001,33 @@ class CryptoCalculator:
                 # 年間合計損益（日元）
                 total_profit = sum([float(str(r[6]).replace(',', '')) for r in results if r[6] != 0 and str(r[6]) != "N/A"])
                 
+                # 计算买卖汇总信息
+                total_buy_quantity = 0.0
+                total_buy_amount = 0.0
+                total_sell_quantity = 0.0
+                total_sell_amount = 0.0
+                
+                for result in results:
+                    if result[2] == "BUY":  # 种别列
+                        total_buy_quantity += float(str(result[4]).replace(',', ''))  # 数量列
+                        total_buy_amount += float(str(result[5]).replace(',', ''))    # 単価(JPY)列
+                    elif result[2] == "SELL":  # 种别列
+                        total_sell_quantity += float(str(result[4]).replace(',', ''))  # 数量列
+                        # 对于SELL，我们需要从損益(JPY)列计算金额
+                        if result[6] != "N/A":
+                            profit = float(str(result[6]).replace(',', ''))
+                            quantity = float(str(result[4]).replace(',', ''))
+                            avg_cost = float(str(result[7]).replace(',', ''))
+                            sell_amount = profit + (quantity * avg_cost)
+                            total_sell_amount += sell_amount
+                
                 # 公式詳細を表示
                 self.display_formulas(formula_details, total_profit, results)
                 
                 print(f"\n=== 計算結果サマリー ===")
                 print(f"総取引件数: {len(results)}")
+                print(f"総買入 BTC: {total_buy_quantity:.8f}, 総価格: {total_buy_amount:,.0f} 円")
+                print(f"総売出 BTC: {total_sell_quantity:.8f}, 総価格: {total_sell_amount:,.0f} 円")
                 print(f"年間損益合計: {total_profit:,.0f} 円")
                 print(f"通貨別保有状況:")
                 for coin, data in holdings.items():
@@ -674,7 +1036,13 @@ class CryptoCalculator:
                 
                 # 結果を表示
                 self.display_results()
-                self.total_profit_var.set(f"年間損益合計: {total_profit:,.0f} 円")
+                
+                # 更新汇总信息显示
+                summary_text = f"総買入 BTC: {total_buy_quantity:.8f}, 総価格: {total_buy_amount:,.0f} 円\n"
+                summary_text += f"総売出 BTC: {total_sell_quantity:.8f}, 総価格: {total_sell_amount:,.0f} 円\n"
+                summary_text += f"年間損益合計: {total_profit:,.0f} 円"
+                
+                self.total_profit_var.set(summary_text)
                 
                 # 按货币分别保存结果
                 results_folder = self.save_results_by_coin(results)
@@ -887,7 +1255,14 @@ class CryptoCalculator:
                                 holdings['BTC']['quantity'] -= quantity
                                 holdings['BTC']['total_cost'] -= cost_basis
                                 
-                                results.append([transaction_counter, date, "SELL", coin, quantity, "N/A", f"{profit:,.0f}", f"{avg_cost:,.0f}"])
+                                # 現物注文取引履歴から売却単価を取得
+                                sell_unit_price = "N/A"
+                                if hasattr(self, 'trading_prices') and coin in self.trading_prices:
+                                    # 売却取引の単価を計算（売却代金 ÷ 売却数量）
+                                    if quantity > 0:
+                                        sell_unit_price = f"{jpy_revenue_amount / quantity:,.0f}"
+                                
+                                results.append([transaction_counter, date, "SELL", coin, quantity, sell_unit_price, f"{profit:,.0f}", f"{avg_cost:,.0f}"])
                                 
                                 # 标记为已处理
                                 processed_transactions.add(transaction_key)
@@ -907,11 +1282,33 @@ class CryptoCalculator:
                 # 计算总损益
                 total_profit = sum([float(str(r[6]).replace(',', '')) for r in results if r[6] != 0 and str(r[6]) != "N/A"])
                 
+                # 计算买卖汇总信息
+                total_buy_quantity = 0.0
+                total_buy_amount = 0.0
+                total_sell_quantity = 0.0
+                total_sell_amount = 0.0
+                
+                for result in results:
+                    if result[2] == "BUY":  # 种别列
+                        total_buy_quantity += float(str(result[4]).replace(',', ''))  # 数量列
+                        total_buy_amount += float(str(result[5]).replace(',', ''))    # 単価(JPY)列
+                    elif result[2] == "SELL":  # 种别列
+                        total_sell_quantity += float(str(result[4]).replace(',', ''))  # 数量列
+                        # 对于SELL，我们需要从損益(JPY)列计算金额
+                        if result[6] != "N/A":
+                            profit = float(str(result[6]).replace(',', ''))
+                            quantity = float(str(result[4]).replace(',', ''))
+                            avg_cost = float(str(result[7]).replace(',', ''))
+                            sell_amount = profit + (quantity * avg_cost)
+                            total_sell_amount += sell_amount
+                
                 # 显示公式和结果
                 self.display_formulas(formula_details, total_profit, results)
                 
                 print(f"\n=== 日元交易計算結果サマリー ===")
                 print(f"総取引件数: {len(results)}")
+                print(f"総買入 BTC: {total_buy_quantity:.8f}, 総価格: {total_buy_amount:,.0f} 円")
+                print(f"総売出 BTC: {total_sell_quantity:.8f}, 総価格: {total_sell_amount:,.0f} 円")
                 print(f"年間損益合計: {total_profit:,.0f} 円")
                 print(f"通貨別保有状況:")
                 for coin, data in holdings.items():
@@ -920,7 +1317,13 @@ class CryptoCalculator:
                 
                 # 显示结果
                 self.display_results()
-                self.total_profit_var.set(f"年間損益合計: {total_profit:,.0f} 円")
+                
+                # 更新汇总信息显示
+                summary_text = f"総買入 BTC: {total_buy_quantity:.8f}, 総価格: {total_buy_amount:,.0f} 円\n"
+                summary_text += f"総売出 BTC: {total_sell_quantity:.8f}, 総価格: {total_sell_amount:,.0f} 円\n"
+                summary_text += f"年間損益合計: {total_profit:,.0f} 円"
+                
+                self.total_profit_var.set(summary_text)
                 
                 messagebox.showinfo("完了", "日元交易の損益計算が完了しました！")
             else:
@@ -1232,13 +1635,44 @@ class CryptoCalculator:
             return {}
     
     def get_price_for_date(self, date_str, coin):
-        """根据日期和币种获取价格"""
+        """根据日期和币种获取价格，优先使用現物注文取引履歴中的实际价格"""
+        # 首先尝试从現物注文取引履歴中获取实际价格
+        if hasattr(self, 'trading_prices') and coin in self.trading_prices:
+            # 将日期字符串转换为datetime对象
+            try:
+                date_obj = pd.to_datetime(date_str)
+                # 查找最接近的日期
+                min_diff = float('inf')
+                best_price = None
+                best_trade_info = None
+                
+                # 检查买入和卖出记录
+                for trade_type in ['buys', 'sells']:
+                    if trade_type in self.trading_prices[coin]:
+                        for trade in self.trading_prices[coin][trade_type]:
+                            diff = abs((trade['date'] - date_obj).total_seconds())
+                            if diff < min_diff:
+                                min_diff = diff
+                                best_price = trade['price']
+                                best_trade_info = f"{trade_type} {trade['date']} {trade['price']}"
+                
+                if best_price is not None and min_diff <= 7200:  # 2小时内的价格
+                    print(f"  ✓ 現物注文取引履歴から{coin}の価格を取得: {best_price} (日付差: {min_diff/60:.1f}分, 取引: {best_trade_info})")
+                    return best_price
+                elif best_price is not None:
+                    print(f"  ⚠️ 現物注文取引履歴から{coin}の価格を取得: {best_price} (日付差: {min_diff/60:.1f}分, 取引: {best_trade_info}) - 日付差が大きすぎます")
+            except Exception as e:
+                print(f"  現物注文取引履歴からの価格取得エラー: {str(e)}")
+        
+        # 如果没有現物注文取引履歴价格，则使用历史价格
         prices = self.load_historical_prices()
         date_key = date_str[:10]  # 只取日期部分，去掉时间
         
         if date_key in prices and coin in prices[date_key]:
+            print(f"  ✓ 历史价格から{coin}の価格を取得: {prices[date_key][coin]}")
             return prices[date_key][coin]
         
+        print(f"  ⚠️ {coin}の価格が見つかりません: {date_str}")
         return None
     
     def display_formulas(self, formula_details, total_profit, results):
