@@ -282,6 +282,30 @@ class CryptoCalculator:
                 messagebox.showerror("エラー", "ファイルの文字コードが判別できません")
                 return
                 
+            # 自動的に現物注文取引履歴.csvファイルを読み込む
+            trading_file_path = "現物注文取引履歴.csv"
+            if os.path.exists(trading_file_path):
+                try:
+                    # 文字コードを自動判定
+                    for encoding in encodings:
+                        try:
+                            self.trading_df = pd.read_csv(trading_file_path, encoding=encoding)
+                            break
+                        except UnicodeDecodeError:
+                            continue
+                    else:
+                        print("警告: 現物注文取引履歴.csvファイルの文字コードを判定できませんでした")
+                        self.trading_df = None
+                        
+                    if self.trading_df is not None:
+                        print(f"✓ 自動的に現物注文取引履歴.csvファイルを読み込みました (行数: {len(self.trading_df)})")
+                except Exception as e:
+                    print(f"警告: 現物注文取引履歴.csvファイルの読み込みに失敗しました: {str(e)}")
+                    self.trading_df = None
+            else:
+                print("警告: 現物注文取引履歴.csvファイルが見つかりません")
+                self.trading_df = None
+            
             messagebox.showinfo("成功", f"データを読み込みました\n行数: {len(self.df)}\n列数: {len(self.df.columns)}")
             
         except Exception as e:
@@ -291,6 +315,11 @@ class CryptoCalculator:
         """現物注文取引履歴データを処理して、取引価格情報を追加"""
         try:
             print("現物注文取引履歴データの処理を開始...")
+            
+            # 检查trading_df是否存在
+            if self.trading_df is None:
+                print("警告: 現物注文取引履歴データが読み込まれていません")
+                return
             
             # 日付列をdatetime型に変換
             self.trading_df['Date(UTC)'] = pd.to_datetime(self.trading_df['Date(UTC)'])
@@ -358,32 +387,34 @@ class CryptoCalculator:
                                 processed_count += 1
                             
                     elif 'BTC' in pair and 'ETH' in pair:
-                        # ETHBTC取引の場合
-                        if 'ETH' not in self.trading_prices:
-                            self.trading_prices['ETH'] = {'buys': [], 'sells': []}
+                        # ETHBTC取引の場合 - 只记录BTC的价格
+                        if 'BTC' not in self.trading_prices:
+                            self.trading_prices['BTC'] = {'buys': [], 'sells': []}
                         
                         eth_quantity = self.parse_quantity(executed)
                         btc_amount = self.parse_btc_amount(amount)
                         
-                        if eth_quantity > 0:  # 有効な数量の場合のみ追加
+                        if btc_amount > 0:  # 有効なBTC数量の場合のみ追加
                             if side == 'BUY':
-                                # ETH購入（BTC支出）
-                                self.trading_prices['ETH']['buys'].append({
+                                # ETH購入（BTC支出）→ BTC売却
+                                self.trading_prices['BTC']['sells'].append({
                                     'date': date,
-                                    'price': price,  # ETH/BTC価格
-                                    'quantity': eth_quantity,
-                                    'btc_amount': btc_amount,
-                                    'fee': fee
+                                    'price': 1/price,  # BTC/ETH価格
+                                    'quantity': btc_amount,
+                                    'eth_amount': eth_quantity,
+                                    'fee': fee,
+                                    'pair': pair
                                 })
                                 processed_count += 1
                             elif side == 'SELL':
-                                # ETH売却（BTC獲得）
-                                self.trading_prices['ETH']['sells'].append({
+                                # ETH売却（BTC獲得）→ BTC購入
+                                self.trading_prices['BTC']['buys'].append({
                                     'date': date,
-                                    'price': price,
-                                    'quantity': eth_quantity,
-                                    'btc_amount': btc_amount,
-                                    'fee': fee
+                                    'price': 1/price,  # BTC/ETH価格
+                                    'quantity': btc_amount,
+                                    'eth_amount': eth_quantity,
+                                    'fee': fee,
+                                    'pair': pair
                                 })
                                 processed_count += 1
                                 
@@ -958,6 +989,7 @@ class CryptoCalculator:
                                             print(f"  ✓ 現物注文取引履歴から{coin}売却単価を取得: {actual_sell_price:,.0f} 円")
                                             # 使用实际价格重新计算卖出金额
                                             jpy_revenue_amount = quantity * actual_sell_price
+                                            print(f"  ✓ 使用实际价格重新计算: {quantity:.8f} × {actual_sell_price:,.0f} = {jpy_revenue_amount:,.0f} 円")
                                         else:
                                             print(f"  ⚠️ 現物注文取引履歴から{coin}の価格を取得できませんでした")
                                     except Exception as e:
@@ -1444,6 +1476,7 @@ class CryptoCalculator:
                                             print(f"  ✓ 現物注文取引履歴から{coin}売却単価を取得: {actual_sell_price:,.0f} 円")
                                             # 使用实际价格重新计算卖出金额
                                             jpy_revenue_amount = quantity * actual_sell_price
+                                            print(f"  ✓ 使用实际价格重新计算: {quantity:.8f} × {actual_sell_price:,.0f} = {jpy_revenue_amount:,.0f} 円")
                                         else:
                                             print(f"  ⚠️ 現物注文取引履歴から{coin}的価格を取得できませんでした")
                                     except Exception as e:
@@ -2061,6 +2094,39 @@ class CryptoCalculator:
                             print(f"        ❌ 没有找到ETH/JPY交易")
                     else:
                         print(f"        ❌ 没有找到ETH/BTC交易")
+                    
+                    # 尝试从trading_prices中获取BTC价格
+                    if hasattr(self, 'trading_prices') and 'BTC' in self.trading_prices:
+                        print(f"      🔍 尝试从trading_prices获取BTC价格")
+                        # 查找最接近的BTC交易
+                        min_diff = float('inf')
+                        best_price = None
+                        
+                        for trade_type in ['buys', 'sells']:
+                            for trade in self.trading_prices['BTC'][trade_type]:
+                                diff = abs((trade['date'] - date_obj).total_seconds())
+                                if diff < min_diff:
+                                    min_diff = diff
+                                    # 如果是ETHBTC交易，需要计算JPY价格
+                                    if 'eth_amount' in trade:
+                                        # 尝试获取ETH的JPY价格
+                                        eth_jpy_trades = self.trading_df[
+                                            (self.trading_df['Pair'] == 'ETHJPY') & 
+                                            (pd.to_datetime(self.trading_df['Date(UTC)']) >= trade['date'] - time_window) &
+                                            (pd.to_datetime(self.trading_df['Date(UTC)']) <= trade['date'] + time_window)
+                                        ]
+                                        if not eth_jpy_trades.empty:
+                                            eth_jpy_price = float(eth_jpy_trades.iloc[-1]['Price'])
+                                            btc_jpy_price = eth_jpy_price * trade['price']  # trade['price']是BTC/ETH价格
+                                            best_price = btc_jpy_price
+                                            print(f"        ✓ 从ETHBTC交易计算BTC价格: {btc_jpy_price:,.0f} 円")
+                                        else:
+                                            # 如果没有ETHJPY价格，使用ETHBTC价格作为参考
+                                            # 这里可以设置一个默认的ETH价格，或者跳过
+                                            print(f"        ⚠️ 没有找到ETHJPY价格，无法计算BTC的JPY价格")
+                        
+                        if best_price is not None and min_diff <= 7200:  # 2小时内的价格
+                            return best_price
                 
                 # 尝试通过DOGE/JPY交易计算（如果有的话）
                 if coin == 'BTC':
