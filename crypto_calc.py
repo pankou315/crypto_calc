@@ -59,8 +59,25 @@ class CryptoCalculator:
         algo_frame = ttk.LabelFrame(main_frame, text="計算アルゴリズム", padding="10")
         algo_frame.grid(row=2, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=(0, 20))
         
+        # 计算方法选择
+        method_frame = ttk.Frame(algo_frame)
+        method_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        ttk.Label(method_frame, text="計算方法選択:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+        
+        self.calculation_method = tk.StringVar(value="moving_average")
+        moving_avg_radio = ttk.Radiobutton(method_frame, text="移動平均法", variable=self.calculation_method, value="moving_average")
+        moving_avg_radio.grid(row=0, column=1, padx=(0, 20))
+        
+        total_avg_radio = ttk.Radiobutton(method_frame, text="総平均法", variable=self.calculation_method, value="total_average")
+        total_avg_radio.grid(row=0, column=2, padx=(0, 20))
+        
+        # 方法说明
+        method_desc = ttk.Label(method_frame, text="移動平均法: 税務署推奨 | 総平均法: 簡易計算", font=("Arial", 9))
+        method_desc.grid(row=0, column=3, padx=(20, 0))
+        
         algo_text = tk.Text(algo_frame, height=6, width=120, wrap=tk.WORD)
-        algo_text.grid(row=0, column=0, sticky=(tk.W, tk.E))
+        algo_text.grid(row=1, column=0, sticky=(tk.W, tk.E))
         
         # アルゴリズムの説明を挿入
         algorithm_description = """
@@ -79,7 +96,15 @@ class CryptoCalculator:
 3. 年間損益合計：
    - 全売却取引の損益を合計
 
-※ この方法は税務署が認める移動平均法に基づいています
+【総平均法による損益計算アルゴリズム】
+
+1. 年間の総取得費と総取得数量を計算
+2. 総平均取得単価 = 総取得費 ÷ 総取得数量
+3. 各売却取引の損益 = 売却代金 - (売却数量 × 総平均取得単価) - 手数料
+4. 年間損益合計 = 全売却取引の損益合計
+
+※ 移動平均法は税務署が推奨する方法です
+※ 総平均法は簡易計算方法です
 
 【計算対象となる取引】
 • Transaction Buy: 暗号資産購入
@@ -308,7 +333,8 @@ class CryptoCalculator:
                                     'price': price,
                                     'quantity': coin_quantity,
                                     'jpy_amount': jpy_amount,
-                                    'fee': fee
+                                    'fee': fee,
+                                    'pair': pair  # 添加交易对信息
                                 })
                                 processed_count += 1
                             
@@ -326,7 +352,8 @@ class CryptoCalculator:
                                     'price': price,
                                     'quantity': coin_quantity,
                                     'jpy_amount': jpy_amount,
-                                    'fee': fee
+                                    'fee': fee,
+                                    'pair': pair  # 添加交易对信息
                                 })
                                 processed_count += 1
                             
@@ -491,6 +518,10 @@ class CryptoCalculator:
             return
             
         try:
+            # 获取选择的计算方法
+            method = self.calculation_method.get()
+            print(f"=== 使用计算方法: {'移動平均法' if method == 'moving_average' else '総平均法'} ===")
+            
             # 現物注文取引履歴データを処理
             self.process_trading_history()
             
@@ -531,6 +562,11 @@ class CryptoCalculator:
             formula_details = []  # 公式詳細を保存
             processed_transactions = set()  # 処理済み取引を記録（重複防止）
             transaction_counter = 0  # 取引番号カウンター
+            
+            # 总平均法计算用变量
+            total_buy_quantity = 0.0
+            total_buy_cost = 0.0
+            total_avg_cost = 0.0
             
             def format_number(value, decimal_places=8):
                 """数字を適切な形式でフォーマット"""
@@ -774,14 +810,21 @@ class CryptoCalculator:
                         
                         # 支払いがある場合のみ処理
                         if jpy_spend_amount > 0:
-                            # 保有数量と取得費を更新（日元）
-                            holdings[coin]['quantity'] += quantity
-                            holdings[coin]['total_cost'] += jpy_spend_amount + jpy_fee_amount
+                            # 更新持有量和成本
+                            old_quantity = holdings['BTC']['quantity']
+                            old_cost = holdings['BTC']['total_cost']
                             
-                            # 公式詳細を記録
-                            new_quantity = holdings[coin]['quantity']
-                            new_cost = holdings[coin]['total_cost']
+                            holdings['BTC']['quantity'] += change
+                            holdings['BTC']['total_cost'] += jpy_spend_amount + jpy_fee_amount
+                            
+                            new_quantity = holdings['BTC']['quantity']
+                            new_cost = holdings['BTC']['total_cost']
                             avg_cost = new_cost / new_quantity if new_quantity > 0 else 0
+                            
+                            # 更新总平均法变量
+                            total_buy_quantity += change
+                            total_buy_cost += jpy_spend_amount + jpy_fee_amount
+                            total_avg_cost = total_buy_cost / total_buy_quantity if total_buy_quantity > 0 else 0
                             
                             if coin == 'ETH':
                                 formula_detail = f"""
@@ -827,6 +870,12 @@ class CryptoCalculator:
                 elif operation == 'Transaction Sold':
                     # 暗号資産売却
                     if change < 0:  # 負の値の場合のみ処理
+                        # 重複処理防止 - 使用更精确的key来避免重复计算
+                        transaction_key = f"{date}_{operation}_{coin}_{change}"
+                        if transaction_key in processed_transactions:
+                            print(f"重複{coin} SELL取引をスキップ: {transaction_key}")
+                            continue
+                        
                         transaction_counter += 1  # 取引番号を増加
                         
                         quantity = abs(change)
@@ -898,22 +947,53 @@ class CryptoCalculator:
                             
                             # 売却代金がある場合のみ処理
                             if jpy_revenue_amount > 0:
+                                # 首先尝试从現物注文取引履歴获取实际卖出价格
+                                actual_sell_price = None
+                                if hasattr(self, 'trading_df') and self.trading_df is not None:
+                                    try:
+                                        # 查找对应日期的交易价格
+                                        transaction_date = row['UTC_Time'].strftime('%Y-%m-%d %H:%M')
+                                        actual_sell_price = self.get_price_for_date(transaction_date, coin)
+                                        if actual_sell_price and actual_sell_price > 0:
+                                            print(f"  ✓ 現物注文取引履歴から{coin}売却単価を取得: {actual_sell_price:,.0f} 円")
+                                            # 使用实际价格重新计算卖出金额
+                                            jpy_revenue_amount = quantity * actual_sell_price
+                                        else:
+                                            print(f"  ⚠️ 現物注文取引履歴から{coin}の価格を取得できませんでした")
+                                    except Exception as e:
+                                        print(f"  現物注文取引履歴からの価格取得エラー: {str(e)}")
+                                
                                 # 損益計算（手数料を考慮）
+                                if method == "total_average":
+                                    # 总平均法：使用总平均成本计算
+                                    cost_basis = total_avg_cost * quantity
+                                    print(f"  総平均法: 売却数量={quantity:.8f}, 総平均単価={total_avg_cost:,.0f} 円, 取得費={cost_basis:,.0f} 円")
+                                else:
+                                    # 移动平均法：使用当前平均成本计算
+                                    cost_basis = avg_cost * quantity
+                                    print(f"  移動平均法: 売却数量={quantity:.8f}, 現在平均単価={avg_cost:,.0f} 円, 取得費={cost_basis:,.0f} 円")
+                                
                                 profit = jpy_revenue_amount - cost_basis - jpy_fee_amount
                                 
                                 # 公式詳細を記録
                                 new_quantity = old_quantity - quantity
                                 new_cost = old_cost - cost_basis
                                 
+                                if method == "total_average":
+                                    method_name = "総平均法"
+                                    cost_calculation = f"取得費（売却分）: {total_avg_cost:,.0f} 円 × {format_number(quantity)} = {cost_basis:,.0f} 円"
+                                else:
+                                    method_name = "移動平均法"
+                                    cost_calculation = f"取得費（売却分）: {avg_cost:,.0f} 円 × {format_number(quantity)} = {cost_basis:,.0f} 円"
+                                
                                 formula_detail = f"""
-【取引{transaction_counter}】{date} {coin}売却取引
-売却数量: {formatted_quantity}
+【取引{transaction_counter}】{date} BTC日元売却 ({method_name})
+売却数量: {format_number(quantity)}
 売却代金（日元）: {jpy_revenue_amount:,.0f} 円
 手数料: {jpy_fee_amount:,.0f} 円
 売却前保有数量: {format_number(old_quantity)}
 売却前累計取得費: {old_cost:,.0f} 円
-平均取得単価: {old_cost:,.0f} 円 ÷ {format_number(old_quantity)} = {avg_cost:,.0f} 円
-取得費（売却分）: {avg_cost:,.0f} 円 × {format_number(quantity)} = {cost_basis:,.0f} 円
+{cost_calculation}
 損益計算: {jpy_revenue_amount:,.0f} 円 - {cost_basis:,.0f} 円 - {jpy_fee_amount:,.0f} 円 = {profit:,.0f} 円
 売却後保有数量: {format_number(new_quantity)}
 売却後累計取得費: {new_cost:,.0f} 円
@@ -922,24 +1002,47 @@ class CryptoCalculator:
                                 
                                 print(f"  → {coin}売却: 数量={quantity}, 売却代金={jpy_revenue_amount:,.0f} 円, 取得費={cost_basis:,.0f} 円, 手数料={jpy_fee_amount:,.0f} 円, 損益={profit:,.0f} 円")
                                 
+                                # 更详细的卖出信息显示
+                                if method == "total_average":
+                                    print(f"    【総平均法計算詳細】")
+                                    print(f"    売却数量: {quantity:.8f} BTC")
+                                    print(f"    売却代金: {jpy_revenue_amount:,.0f} 円")
+                                    print(f"    総平均単価: {total_avg_cost:,.0f} 円/BTC")
+                                    print(f"    売却成本: {cost_basis:,.0f} 円 (={quantity:.8f} × {total_avg_cost:,.0f})")
+                                    print(f"    手数料: {jpy_fee_amount:,.0f} 円")
+                                    print(f"    損益計算: {jpy_revenue_amount:,.0f} - {cost_basis:,.0f} - {jpy_fee_amount:,.0f} = {profit:,.0f} 円")
+                                else:
+                                    print(f"    【移動平均法計算詳細】")
+                                    print(f"    売却数量: {quantity:.8f} BTC")
+                                    print(f"    売却代金: {jpy_revenue_amount:,.0f} 円")
+                                    print(f"    現在平均単価: {avg_cost:,.0f} 円/BTC")
+                                    print(f"    売却成本: {cost_basis:,.0f} 円 (={quantity:.8f} × {avg_cost:,.0f})")
+                                    print(f"    手数料: {jpy_fee_amount:,.0f} 円")
+                                    print(f"    損益計算: {jpy_revenue_amount:,.0f} - {cost_basis:,.0f} - {jpy_fee_amount:,.0f} = {profit:,.0f} 円")
+                                
                                 # 保有数量と取得費を減らす
                                 holdings[coin]['quantity'] -= quantity
                                 holdings[coin]['total_cost'] -= cost_basis
                                 
-                                # 現物注文取引履歴から売却単価を取得
+                                # 売却単価を計算
                                 sell_unit_price = "N/A"
-                                if hasattr(self, 'trading_prices') and coin in self.trading_prices:
-                                    # 売却取引の単価を計算（売却代金 ÷ 売却数量）
-                                    if quantity > 0:
-                                        sell_unit_price = f"{jpy_revenue_amount / quantity:,.0f}"
+                                if actual_sell_price and actual_sell_price > 0:
+                                    sell_unit_price = f"{actual_sell_price:,.0f}"
+                                elif quantity > 0:
+                                    # 如果没有实际价格，使用计算出的单价
+                                    calculated_price = jpy_revenue_amount / quantity
+                                    sell_unit_price = f"{calculated_price:,.0f}"
                                 
                                 results.append([transaction_counter, date, "SELL", coin, quantity, sell_unit_price, f"{profit:,.0f}", f"{avg_cost:,.0f}"])
                                 
-                                # 処理済みとして記録
+                                # 処理済みとして記録 - 立即标记所有相关交易为已处理
                                 processed_transactions.add(transaction_key)
                                 for related in related_transactions:
                                     related_key = f"{date}_{related['Operation']}_{related['Coin']}_{related['Change']}"
                                     processed_transactions.add(related_key)
+                                    print(f"    関連取引を処理済みとして記録: {related_key}")
+                                
+                                print(f"    ✓ SELL取引完了: {transaction_key}")
                         else:
                             print(f"警告: {coin}の保有数量が不足しています。必要: {quantity}, 保有: {holdings[coin]['quantity']}")
                 
@@ -1007,19 +1110,74 @@ class CryptoCalculator:
                 total_sell_quantity = 0.0
                 total_sell_amount = 0.0
                 
+                print(f"\n=== 详细金额计算 ===")
+                
                 for result in results:
                     if result[2] == "BUY":  # 种别列
-                        total_buy_quantity += float(str(result[4]).replace(',', ''))  # 数量列
-                        total_buy_amount += float(str(result[5]).replace(',', ''))    # 単価(JPY)列
+                        quantity = float(str(result[4]).replace(',', ''))  # 数量列
+                        unit_price = str(result[5])  # 単価(JPY)列
+                        
+                        total_buy_quantity += quantity
+                        
+                        if unit_price != "N/A":
+                            try:
+                                amount = float(unit_price.replace(',', ''))
+                                # 修复：计算总金额，而不是只加单价
+                                total_amount = quantity * amount
+                                total_buy_amount += total_amount
+                                print(f"  BUY: {quantity:.8f} BTC × {amount:,.0f} 円 = {total_amount:,.0f} 円")
+                            except:
+                                print(f"  BUY: {quantity:.8f} BTC × {unit_price} (无法解析)")
+                        else:
+                            print(f"  BUY: {quantity:.8f} BTC × N/A (单价缺失)")
+                            
                     elif result[2] == "SELL":  # 种别列
-                        total_sell_quantity += float(str(result[4]).replace(',', ''))  # 数量列
+                        quantity = float(str(result[4]).replace(',', ''))  # 数量列
+                        total_sell_quantity += quantity
+                        
                         # 对于SELL，我们需要从損益(JPY)列计算金额
                         if result[6] != "N/A":
-                            profit = float(str(result[6]).replace(',', ''))
-                            quantity = float(str(result[4]).replace(',', ''))
-                            avg_cost = float(str(result[7]).replace(',', ''))
-                            sell_amount = profit + (quantity * avg_cost)
-                            total_sell_amount += sell_amount
+                            try:
+                                profit = float(str(result[6]).replace(',', ''))
+                                avg_cost = float(str(result[7]).replace(',', ''))
+                                
+                                # 修复：使用真实的卖出价格计算卖出金额
+                                # 从単価(JPY)列获取真实价格
+                                unit_price_str = str(result[5])
+                                if unit_price_str != "N/A":
+                                    try:
+                                        real_unit_price = float(unit_price_str.replace(',', ''))
+                                        
+                                        # 添加价格合理性检查
+                                        if real_unit_price > 50000000:  # 如果单价超过5000万日元，认为异常
+                                            print(f"  ⚠️ 检测到异常高单价: {real_unit_price:,.0f} 円，使用回退方法")
+                                            sell_amount = profit + (quantity * avg_cost)
+                                            print(f"  SELL: {quantity:.8f} BTC, 損益: {profit:,.0f} 円, 取得費: {quantity * avg_cost:,.0f} 円, 売却金額: {sell_amount:,.0f} 円 (回退方法)")
+                                        else:
+                                            sell_amount = quantity * real_unit_price
+                                            print(f"  SELL: {quantity:.8f} BTC, 損益: {profit:,.0f} 円, 取得費: {quantity * avg_cost:,.0f} 円, 売却金額: {sell_amount:,.0f} 円 (単価: {real_unit_price:,.0f} 円)")
+                                    except:
+                                        # 如果无法解析单价，回退到原来的方法
+                                        sell_amount = profit + (quantity * avg_cost)
+                                        print(f"  SELL: {quantity:.8f} BTC, 損益: {profit:,.0f} 円, 取得費: {quantity * avg_cost:,.0f} 円, 売却金額: {sell_amount:,.0f} 円 (回退方法)")
+                                else:
+                                    # 如果单价是N/A，回退到原来的方法
+                                    sell_amount = profit + (quantity * avg_cost)
+                                    print(f"  SELL: {quantity:.8f} BTC, 損益: {profit:,.0f} 円, 取得費: {quantity * avg_cost:,.0f} 円, 売却金額: {sell_amount:,.0f} 円 (回退方法)")
+                                
+                                total_sell_amount += sell_amount
+                            except:
+                                print(f"  SELL: {quantity:.8f} BTC (无法计算売却金額)")
+                        else:
+                            print(f"  SELL: {quantity:.8f} BTC (損益N/A)")
+                
+                print(f"\n=== 汇总计算结果 ===")
+                print(f"总买入数量: {total_buy_quantity:.8f} BTC")
+                print(f"总买入金额: {total_buy_amount:,.0f} 円")
+                print(f"总卖出数量: {total_sell_quantity:.8f} BTC")
+                print(f"总卖出金额: {total_sell_amount:,.0f} 円")
+                if total_buy_quantity > 0:
+                    print(f"平均买入单价: {total_buy_amount / total_buy_quantity:,.0f} 円/BTC")
                 
                 # 公式詳細を表示
                 self.display_formulas(formula_details, total_profit, results)
@@ -1037,10 +1195,30 @@ class CryptoCalculator:
                 # 結果を表示
                 self.display_results()
                 
-                # 更新汇总信息显示
-                summary_text = f"総買入 BTC: {total_buy_quantity:.8f}, 総価格: {total_buy_amount:,.0f} 円\n"
-                summary_text += f"総売出 BTC: {total_sell_quantity:.8f}, 総価格: {total_sell_amount:,.0f} 円\n"
-                summary_text += f"年間損益合計: {total_profit:,.0f} 円"
+                # 更新汇总信息显示 - 使用更详细的格式
+                avg_buy_price = total_buy_amount / total_buy_quantity if total_buy_quantity > 0 else 0
+                avg_sell_price = total_sell_amount / total_sell_quantity if total_sell_quantity > 0 else 0
+                
+                # 获取计算方法
+                method = self.calculation_method.get()
+                method_name = "総平均法" if method == "total_average" else "移動平均法"
+                
+                summary_text = f"計算方法: {method_name}\n"
+                summary_text += f"総買入 BTC: {total_buy_quantity:.8f}, 単価: {avg_buy_price:,.0f} 円, 花费: {total_buy_amount:,.0f} 円\n"
+                summary_text += f"総売出 BTC: {total_sell_quantity:.8f}, 単価: {avg_sell_price:,.0f} 円, 获得: {total_sell_amount:,.0f} 円\n"
+                
+                # 添加总平均法的详细计算说明
+                if method == "total_average":
+                    total_avg_cost = total_buy_amount / total_buy_quantity if total_buy_quantity > 0 else 0
+                    total_sell_cost = total_sell_quantity * total_avg_cost
+                    total_fees = total_sell_amount - total_sell_cost - total_profit
+                    summary_text += f"\n【総平均法計算詳細】\n"
+                    summary_text += f"総平均単価: {total_avg_cost:,.0f} 円/BTC\n"
+                    summary_text += f"総売出成本: {total_sell_cost:,.0f} 円 (={total_sell_quantity:.8f} × {total_avg_cost:,.0f})\n"
+                    summary_text += f"総手数料: {total_fees:,.0f} 円\n"
+                    summary_text += f"損益計算: {total_sell_amount:,.0f} - {total_sell_cost:,.0f} - {total_fees:,.0f} = {total_profit:,.0f} 円\n"
+                
+                summary_text += f"\n年間損益合計: {total_profit:,.0f} 円"
                 
                 self.total_profit_var.set(summary_text)
                 
@@ -1067,6 +1245,10 @@ class CryptoCalculator:
             return
             
         try:
+            # 获取选择的计算方法
+            method = self.calculation_method.get()
+            print(f"=== 使用计算方法: {'移動平均法' if method == 'moving_average' else '総平均法'} ===")
+            
             # 只选择有日元价格的交易
             jpy_operations = [
                 'Transaction Buy',           # BTC日元购买
@@ -1101,6 +1283,11 @@ class CryptoCalculator:
             formula_details = []
             processed_transactions = set()
             transaction_counter = 0
+            
+            # 总平均法计算用变量
+            total_buy_quantity = 0.0
+            total_buy_cost = 0.0
+            total_avg_cost = 0.0
             
             def format_number(value, decimal_places=8):
                 if abs(value) < 0.000001:
@@ -1164,6 +1351,11 @@ class CryptoCalculator:
                             new_cost = holdings['BTC']['total_cost']
                             avg_cost = new_cost / new_quantity if new_quantity > 0 else 0
                             
+                            # 更新总平均法变量
+                            total_buy_quantity += change
+                            total_buy_cost += jpy_spend_amount + jpy_fee_amount
+                            total_avg_cost = total_buy_cost / total_buy_quantity if total_buy_quantity > 0 else 0
+                            
                             formula_detail = f"""
 【取引{transaction_counter}】{date} BTC日元購入
 購入数量: {format_number(change)}
@@ -1193,6 +1385,20 @@ class CryptoCalculator:
                 elif operation == 'Transaction Sold' and coin == 'BTC':
                     # BTC日元卖出
                     if change < 0:
+                        # 重複処理防止 - 对于BTC，使用时间作为key，避免同一时间的多个SELL交易重复计算
+                        if coin == 'BTC':
+                            # BTC交易：使用时间作为key，避免同一时间的多个SELL交易重复计算
+                            transaction_key = f"{date}_{operation}_{coin}"
+                            if transaction_key in processed_transactions:
+                                print(f"重複BTC SELL取引をスキップ: {transaction_key}")
+                                continue
+                        else:
+                            # 其他货币：使用更精确的key
+                            transaction_key = f"{date}_{operation}_{coin}_{change}"
+                            if transaction_key in processed_transactions:
+                                print(f"重複SELL取引をスキップ: {transaction_key}")
+                                continue
+                        
                         transaction_counter += 1
                         
                         quantity = abs(change)
@@ -1227,10 +1433,35 @@ class CryptoCalculator:
                                 jpy_fee_amount = abs(float(jpy_fees.iloc[0]['Change']))
                             
                             if jpy_revenue_amount > 0:
-                                # 计算损益
+                                # 首先尝试从現物注文取引履歴获取实际卖出价格
+                                actual_sell_price = None
+                                if hasattr(self, 'trading_df') and self.trading_df is not None:
+                                    try:
+                                        # 查找对应日期的交易价格
+                                        transaction_date = row['UTC_Time'].strftime('%Y-%m-%d %H:%M')
+                                        actual_sell_price = self.get_price_for_date(transaction_date, coin)
+                                        if actual_sell_price and actual_sell_price > 0:
+                                            print(f"  ✓ 現物注文取引履歴から{coin}売却単価を取得: {actual_sell_price:,.0f} 円")
+                                            # 使用实际价格重新计算卖出金额
+                                            jpy_revenue_amount = quantity * actual_sell_price
+                                        else:
+                                            print(f"  ⚠️ 現物注文取引履歴から{coin}的価格を取得できませんでした")
+                                    except Exception as e:
+                                        print(f"  現物注文取引履歴からの価格取得エラー: {str(e)}")
+                                
+                                # 損益計算（手数料を考慮）
+                                if method == "total_average":
+                                    # 总平均法：使用总平均成本计算
+                                    cost_basis = total_avg_cost * quantity
+                                    print(f"  総平均法: 売却数量={quantity:.8f}, 総平均単価={total_avg_cost:,.0f} 円, 取得費={cost_basis:,.0f} 円")
+                                else:
+                                    # 移动平均法：使用当前平均成本计算
+                                    cost_basis = avg_cost * quantity
+                                    print(f"  移動平均法: 売却数量={quantity:.8f}, 現在平均単価={avg_cost:,.0f} 円, 取得費={cost_basis:,.0f} 円")
+                                
                                 profit = jpy_revenue_amount - cost_basis - jpy_fee_amount
                                 
-                                # 更新持有量
+                                # 公式詳細を記録
                                 new_quantity = old_quantity - quantity
                                 new_cost = old_cost - cost_basis
                                 
@@ -1251,27 +1482,51 @@ class CryptoCalculator:
                                 
                                 print(f"  → BTC売却: 数量={quantity}, 売却代金={jpy_revenue_amount:,.0f} 円, 取得費={cost_basis:,.0f} 円, 手数料={jpy_fee_amount:,.0f} 円, 損益={profit:,.0f} 円")
                                 
+                                # 更详细的卖出信息显示
+                                if method == "total_average":
+                                    print(f"    【総平均法計算詳細】")
+                                    print(f"    売却数量: {quantity:.8f} BTC")
+                                    print(f"    売却代金: {jpy_revenue_amount:,.0f} 円")
+                                    print(f"    総平均単価: {total_avg_cost:,.0f} 円/BTC")
+                                    print(f"    売却成本: {cost_basis:,.0f} 円 (={quantity:.8f} × {total_avg_cost:,.0f})")
+                                    print(f"    手数料: {jpy_fee_amount:,.0f} 円")
+                                    print(f"    損益計算: {jpy_revenue_amount:,.0f} - {cost_basis:,.0f} - {jpy_fee_amount:,.0f} = {profit:,.0f} 円")
+                                else:
+                                    print(f"    【移動平均法計算詳細】")
+                                    print(f"    売却数量: {quantity:.8f} BTC")
+                                    print(f"    売却代金: {jpy_revenue_amount:,.0f} 円")
+                                    print(f"    現在平均単価: {avg_cost:,.0f} 円/BTC")
+                                    print(f"    売却成本: {cost_basis:,.0f} 円 (={quantity:.8f} × {avg_cost:,.0f})")
+                                    print(f"    手数料: {jpy_fee_amount:,.0f} 円")
+                                    print(f"    損益計算: {jpy_revenue_amount:,.0f} - {cost_basis:,.0f} - {jpy_fee_amount:,.0f} = {profit:,.0f} 円")
+                                
                                 # 更新持有量
                                 holdings['BTC']['quantity'] -= quantity
                                 holdings['BTC']['total_cost'] -= cost_basis
                                 
-                                # 現物注文取引履歴から売却単価を取得
+                                # 売却単価を計算
                                 sell_unit_price = "N/A"
-                                if hasattr(self, 'trading_prices') and coin in self.trading_prices:
-                                    # 売却取引の単価を計算（売却代金 ÷ 売却数量）
-                                    if quantity > 0:
-                                        sell_unit_price = f"{jpy_revenue_amount / quantity:,.0f}"
+                                if actual_sell_price and actual_sell_price > 0:
+                                    sell_unit_price = f"{actual_sell_price:,.0f}"
+                                elif quantity > 0:
+                                    # 如果没有实际价格，使用计算出的单价
+                                    calculated_price = jpy_revenue_amount / quantity
+                                    sell_unit_price = f"{calculated_price:,.0f}"
                                 
                                 results.append([transaction_counter, date, "SELL", coin, quantity, sell_unit_price, f"{profit:,.0f}", f"{avg_cost:,.0f}"])
                                 
-                                # 标记为已处理
+                                # 処理済みとして記録 - 立即标记所有相关交易为已处理
                                 processed_transactions.add(transaction_key)
                                 for _, related in jpy_revenue.iterrows():
                                     related_key = f"{date}_{related['Operation']}_{related['Coin']}_{related['Change']}"
                                     processed_transactions.add(related_key)
+                                    print(f"    関連取引を処理済みとして記録: {related_key}")
                                 for _, related in jpy_fees.iterrows():
                                     related_key = f"{date}_{related['Operation']}_{related['Coin']}_{related['Change']}"
                                     processed_transactions.add(related_key)
+                                    print(f"    関連取引を処理済みとして記録: {related_key}")
+                                
+                                print(f"    ✓ SELL取引完了: {transaction_key}")
                         else:
                             print(f"警告: BTCの保有数量が不足しています。必要: {quantity}, 保有: {holdings['BTC']['quantity']}")
             
@@ -1288,19 +1543,74 @@ class CryptoCalculator:
                 total_sell_quantity = 0.0
                 total_sell_amount = 0.0
                 
+                print(f"\n=== 详细金额计算 ===")
+                
                 for result in results:
                     if result[2] == "BUY":  # 种别列
-                        total_buy_quantity += float(str(result[4]).replace(',', ''))  # 数量列
-                        total_buy_amount += float(str(result[5]).replace(',', ''))    # 単価(JPY)列
+                        quantity = float(str(result[4]).replace(',', ''))  # 数量列
+                        unit_price = str(result[5])  # 単価(JPY)列
+                        
+                        total_buy_quantity += quantity
+                        
+                        if unit_price != "N/A":
+                            try:
+                                amount = float(unit_price.replace(',', ''))
+                                # 修复：计算总金额，而不是只加单价
+                                total_amount = quantity * amount
+                                total_buy_amount += total_amount
+                                print(f"  BUY: {quantity:.8f} BTC × {amount:,.0f} 円 = {total_amount:,.0f} 円")
+                            except:
+                                print(f"  BUY: {quantity:.8f} BTC × {unit_price} (无法解析)")
+                        else:
+                            print(f"  BUY: {quantity:.8f} BTC × N/A (单价缺失)")
+                            
                     elif result[2] == "SELL":  # 种别列
-                        total_sell_quantity += float(str(result[4]).replace(',', ''))  # 数量列
+                        quantity = float(str(result[4]).replace(',', ''))  # 数量列
+                        total_sell_quantity += quantity
+                        
                         # 对于SELL，我们需要从損益(JPY)列计算金额
                         if result[6] != "N/A":
-                            profit = float(str(result[6]).replace(',', ''))
-                            quantity = float(str(result[4]).replace(',', ''))
-                            avg_cost = float(str(result[7]).replace(',', ''))
-                            sell_amount = profit + (quantity * avg_cost)
-                            total_sell_amount += sell_amount
+                            try:
+                                profit = float(str(result[6]).replace(',', ''))
+                                avg_cost = float(str(result[7]).replace(',', ''))
+                                
+                                # 修复：使用真实的卖出价格计算卖出金额
+                                # 从単価(JPY)列获取真实价格
+                                unit_price_str = str(result[5])
+                                if unit_price_str != "N/A":
+                                    try:
+                                        real_unit_price = float(unit_price_str.replace(',', ''))
+                                        
+                                        # 添加价格合理性检查
+                                        if real_unit_price > 50000000:  # 如果单价超过5000万日元，认为异常
+                                            print(f"  ⚠️ 检测到异常高单价: {real_unit_price:,.0f} 円，使用回退方法")
+                                            sell_amount = profit + (quantity * avg_cost)
+                                            print(f"  SELL: {quantity:.8f} BTC, 損益: {profit:,.0f} 円, 取得費: {quantity * avg_cost:,.0f} 円, 売却金額: {sell_amount:,.0f} 円 (回退方法)")
+                                        else:
+                                            sell_amount = quantity * real_unit_price
+                                            print(f"  SELL: {quantity:.8f} BTC, 損益: {profit:,.0f} 円, 取得費: {quantity * avg_cost:,.0f} 円, 売却金額: {sell_amount:,.0f} 円 (単価: {real_unit_price:,.0f} 円)")
+                                    except:
+                                        # 如果无法解析单价，回退到原来的方法
+                                        sell_amount = profit + (quantity * avg_cost)
+                                        print(f"  SELL: {quantity:.8f} BTC, 損益: {profit:,.0f} 円, 取得費: {quantity * avg_cost:,.0f} 円, 売却金額: {sell_amount:,.0f} 円 (回退方法)")
+                                else:
+                                    # 如果单价是N/A，回退到原来的方法
+                                    sell_amount = profit + (quantity * avg_cost)
+                                    print(f"  SELL: {quantity:.8f} BTC, 損益: {profit:,.0f} 円, 取得費: {quantity * avg_cost:,.0f} 円, 売却金額: {sell_amount:,.0f} 円 (回退方法)")
+                                
+                                total_sell_amount += sell_amount
+                            except:
+                                print(f"  SELL: {quantity:.8f} BTC (无法计算売却金額)")
+                        else:
+                            print(f"  SELL: {quantity:.8f} BTC (損益N/A)")
+                
+                print(f"\n=== 汇总计算结果 ===")
+                print(f"总买入数量: {total_buy_quantity:.8f} BTC")
+                print(f"总买入金额: {total_buy_amount:,.0f} 円")
+                print(f"总卖出数量: {total_sell_quantity:.8f} BTC")
+                print(f"总卖出金额: {total_sell_amount:,.0f} 円")
+                if total_buy_quantity > 0:
+                    print(f"平均买入单价: {total_buy_amount / total_buy_quantity:,.0f} 円/BTC")
                 
                 # 显示公式和结果
                 self.display_formulas(formula_details, total_profit, results)
@@ -1318,10 +1628,36 @@ class CryptoCalculator:
                 # 显示结果
                 self.display_results()
                 
-                # 更新汇总信息显示
-                summary_text = f"総買入 BTC: {total_buy_quantity:.8f}, 総価格: {total_buy_amount:,.0f} 円\n"
-                summary_text += f"総売出 BTC: {total_sell_quantity:.8f}, 総価格: {total_sell_amount:,.0f} 円\n"
-                summary_text += f"年間損益合計: {total_profit:,.0f} 円"
+                # 更新汇总信息显示 - 使用更详细的格式
+                avg_buy_price = total_buy_amount / total_buy_quantity if total_buy_quantity > 0 else 0
+                avg_sell_price = total_sell_amount / total_sell_quantity if total_sell_quantity > 0 else 0
+                
+                # 获取计算方法
+                method = self.calculation_method.get()
+                method_name = "総平均法" if method == "total_average" else "移動平均法"
+                
+                summary_text = f"計算方法: {method_name}\n"
+                summary_text += f"総買入 BTC: {total_buy_quantity:.8f}, 単価: {avg_buy_price:,.0f} 円, 花费: {total_buy_amount:,.0f} 円\n"
+                summary_text += f"総売出 BTC: {total_sell_quantity:.8f}, 単価: {avg_sell_price:,.0f} 円, 获得: {total_sell_amount:,.0f} 円\n"
+                
+                # 添加详细计算说明
+                if method == "total_average":
+                    total_avg_cost = total_buy_amount / total_buy_quantity if total_buy_quantity > 0 else 0
+                    total_sell_cost = total_sell_quantity * total_avg_cost
+                    total_fees = total_sell_amount - total_sell_cost - total_profit
+                    summary_text += f"\n【総平均法計算詳細】\n"
+                    summary_text += f"総平均単価: {total_avg_cost:,.0f} 円/BTC\n"
+                    summary_text += f"総売出成本: {total_sell_cost:,.0f} 円 (={total_sell_quantity:.8f} × {total_avg_cost:,.0f})\n"
+                    summary_text += f"総手数料: {total_fees:,.0f} 円\n"
+                    summary_text += f"損益計算: {total_sell_amount:,.0f} - {total_sell_cost:,.0f} - {total_fees:,.0f} = {total_profit:,.0f} 円\n"
+                else:
+                    # 移动平均法的详细计算说明
+                    summary_text += f"\n【移動平均法計算詳細】\n"
+                    summary_text += f"移動平均法は各取引ごとに平均取得単価を再計算します\n"
+                    summary_text += f"各売却取引の損益 = 売却代金 - (売却数量 × 当時の平均取得単価) - 手数料\n"
+                    summary_text += f"年間損益合計 = 全売却取引の損益合計\n"
+                
+                summary_text += f"\n年間損益合計: {total_profit:,.0f} 円"
                 
                 self.total_profit_var.set(summary_text)
                 
@@ -1635,9 +1971,12 @@ class CryptoCalculator:
             return {}
     
     def get_price_for_date(self, date_str, coin):
-        """根据日期和币种获取价格，优先使用現物注文取引履歴中的实际价格"""
+        """根据日期和币种获取价格，优先使用現物注文取引履歴中的实际价格，支持交叉交易价格计算"""
+        print(f"  🔍 开始获取{coin}价格，日期: {date_str}")
+        
         # 首先尝试从現物注文取引履歴中获取实际价格
         if hasattr(self, 'trading_prices') and coin in self.trading_prices:
+            print(f"    ✓ 找到trading_prices中的{coin}数据")
             # 将日期字符串转换为datetime对象
             try:
                 date_obj = pd.to_datetime(date_str)
@@ -1650,29 +1989,123 @@ class CryptoCalculator:
                 for trade_type in ['buys', 'sells']:
                     if trade_type in self.trading_prices[coin]:
                         for trade in self.trading_prices[coin][trade_type]:
+                            # 严格过滤：只处理正确的交易对
+                            pair = trade.get('pair', '')
+                            if coin == 'BTC' and 'BTCJPY' not in pair:
+                                print(f"      ⚠️ 跳过非BTCJPY交易对: {pair}")
+                                continue  # 跳过非BTCJPY的交易
+                            elif coin == 'ETH' and 'ETHJPY' not in pair:
+                                print(f"      ⚠️ 跳过非ETHJPY交易对: {pair}")
+                                continue  # 跳过非ETHJPY的交易
+                            elif coin == 'DOGE' and 'DOGEJPY' not in pair:
+                                print(f"      ⚠️ 跳过非DOGEJPY交易对: {pair}")
+                                continue  # 跳过非DOGEJPY的交易
+                            
                             diff = abs((trade['date'] - date_obj).total_seconds())
                             if diff < min_diff:
                                 min_diff = diff
                                 best_price = trade['price']
-                                best_trade_info = f"{trade_type} {trade['date']} {trade['price']}"
+                                best_trade_info = f"{trade_type} {trade['date']} {trade['price']} ({pair})"
                 
                 if best_price is not None and min_diff <= 7200:  # 2小时内的价格
-                    print(f"  ✓ 現物注文取引履歴から{coin}の価格を取得: {best_price} (日付差: {min_diff/60:.1f}分, 取引: {best_trade_info})")
+                    print(f"    ✓ 現物注文取引履歴から{coin}の価格を取得: {best_price} (日付差: {min_diff/60:.1f}分, 取引: {best_trade_info})")
                     return best_price
                 elif best_price is not None:
-                    print(f"  ⚠️ 現物注文取引履歴から{coin}の価格を取得: {best_price} (日付差: {min_diff/60:.1f}分, 取引: {best_trade_info}) - 日付差が大きすぎます")
+                    print(f"    ⚠️ 現物注文取引履歴から{coin}の価格を取得: {best_price} (日付差: {min_diff/60:.1f}分, 取引: {best_trade_info}) - 日付差が大きすぎます")
+                else:
+                    print(f"    ❌ trading_prices中没有找到{coin}的正确价格数据（需要{coin}JPY交易对）")
             except Exception as e:
-                print(f"  現物注文取引履歴からの価格取得エラー: {str(e)}")
+                print(f"    現物注文取引履歴からの価格取得エラー: {str(e)}")
+        else:
+            print(f"    ❌ 没有找到trading_prices中的{coin}数据")
+        
+        # 如果没有直接的币种价格，尝试通过交叉交易计算
+        if hasattr(self, 'trading_df') and self.trading_df is not None:
+            print(f"    🔍 尝试通过交叉交易计算{coin}价格")
+            try:
+                date_obj = pd.to_datetime(date_str)
+                # 查找2小时内的相关交易
+                time_window = pd.Timedelta(hours=2)
+                
+                # 尝试通过ETH/BTC交易计算BTC价格
+                if coin == 'BTC':
+                    print(f"      🔍 尝试ETH/BTC交叉交易计算")
+                    # 查找ETH/BTC交易
+                    eth_btc_trades = self.trading_df[
+                        (self.trading_df['Pair'] == 'ETHBTC') & 
+                        (pd.to_datetime(self.trading_df['Date(UTC)']) >= date_obj - time_window) &
+                        (pd.to_datetime(self.trading_df['Date(UTC)']) <= date_obj + time_window)
+                    ]
+                    
+                    if not eth_btc_trades.empty:
+                        print(f"        ✓ 找到{len(eth_btc_trades)}个ETH/BTC交易")
+                        # 使用最近的ETH/BTC交易价格
+                        latest_trade = eth_btc_trades.iloc[-1]
+                        eth_btc_price = float(latest_trade['Price'])
+                        
+                        # 尝试获取ETH的JPY价格
+                        eth_jpy_trades = self.trading_df[
+                            (self.trading_df['Pair'] == 'ETHJPY') & 
+                            (pd.to_datetime(self.trading_df['Date(UTC)']) >= date_obj - time_window) &
+                            (pd.to_datetime(self.trading_df['Date(UTC)']) <= date_obj + time_window)
+                        ]
+                        
+                        if not eth_jpy_trades.empty:
+                            print(f"        ✓ 找到{len(eth_jpy_trades)}个ETH/JPY交易")
+                            eth_jpy_price = float(eth_jpy_trades.iloc[-1]['Price'])
+                            # 计算BTC的JPY价格：BTC价格 = ETH价格 × ETH/BTC比率
+                            btc_jpy_price = eth_jpy_price * eth_btc_price
+                            print(f"        ✓ 交叉交易からBTC価格を計算: ETH/JPY {eth_jpy_price:,.0f} × ETH/BTC {eth_btc_price:.6f} = {btc_jpy_price:,.0f} 円")
+                            return btc_jpy_price
+                        else:
+                            print(f"        ❌ 没有找到ETH/JPY交易")
+                    else:
+                        print(f"        ❌ 没有找到ETH/BTC交易")
+                
+                # 尝试通过DOGE/JPY交易计算（如果有的话）
+                if coin == 'BTC':
+                    print(f"      🔍 尝试DOGE/JPY交叉交易计算")
+                    doge_jpy_trades = self.trading_df[
+                        (self.trading_df['Pair'] == 'DOGEJPY') & 
+                        (pd.to_datetime(self.trading_df['Date(UTC)']) >= date_obj - time_window) &
+                        (pd.to_datetime(self.trading_df['Date(UTC)']) <= date_obj + time_window)
+                    ]
+                    
+                    if not doge_jpy_trades.empty:
+                        print(f"        ✓ 找到{len(doge_jpy_trades)}个DOGE/JPY交易")
+                        # 查找DOGE/BTC交易
+                        doge_btc_trades = self.trading_df[
+                            (self.trading_df['Pair'] == 'DOGEBTC') & 
+                            (pd.to_datetime(self.trading_df['Date(UTC)']) >= date_obj - time_window) &
+                            (pd.to_datetime(self.trading_df['Date(UTC)']) <= date_obj + time_window)
+                        ]
+                        
+                        if not doge_btc_trades.empty:
+                            print(f"        ✓ 找到{len(doge_btc_trades)}个DOGE/BTC交易")
+                            doge_jpy_price = float(doge_jpy_trades.iloc[-1]['Price'])
+                            doge_btc_price = float(doge_btc_trades.iloc[-1]['Price'])
+                            # 计算BTC的JPY价格：BTC价格 = DOGE价格 × DOGE/BTC比率
+                            btc_jpy_price = doge_jpy_price * doge_btc_price
+                            print(f"        ✓ 交叉交易からBTC価格を計算: DOGE/JPY {doge_jpy_price:,.0f} × DOGE/BTC {doge_btc_price:.8f} = {btc_jpy_price:,.0f} 円")
+                            return btc_jpy_price
+                        else:
+                            print(f"        ❌ 没有找到DOGE/BTC交易")
+                    else:
+                        print(f"        ❌ 没有找到DOGE/JPY交易")
+                            
+            except Exception as e:
+                print(f"    交叉交易価格計算エラー: {str(e)}")
         
         # 如果没有現物注文取引履歴价格，则使用历史价格
+        print(f"    🔍 尝试使用历史价格")
         prices = self.load_historical_prices()
         date_key = date_str[:10]  # 只取日期部分，去掉时间
         
         if date_key in prices and coin in prices[date_key]:
-            print(f"  ✓ 历史价格から{coin}の価格を取得: {prices[date_key][coin]}")
+            print(f"    ✓ 历史价格から{coin}の価格を取得: {prices[date_key][coin]}")
             return prices[date_key][coin]
         
-        print(f"  ⚠️ {coin}の価格が見つかりません: {date_str}")
+        print(f"    ❌ {coin}の価格が見つかりません: {date_str}")
         return None
     
     def display_formulas(self, formula_details, total_profit, results):
@@ -1688,7 +2121,11 @@ class CryptoCalculator:
         # 各取引の損益を抽出
         sell_results = [r for r in results if r[2] == "SELL"]  # 番号列が追加されたため、インデックスを調整
         if sell_results:
-            total_formula += "年間損益合計 = "
+            # 获取计算方法
+            method = self.calculation_method.get()
+            method_name = "総平均法" if method == "total_average" else "移動平均法"
+            
+            total_formula += f"年間損益合計 ({method_name}) = "
             profit_terms = []
             for result in sell_results:
                 transaction_num = result[0]  # 取引番号
